@@ -1,0 +1,46 @@
+19 June 2026
+-----------------------------------
+1. Find a candle completely below EMA(5).
+2. Mark its high as breakout entry.
+3. Mark its low as stop.
+4. Buy only if ltp breaks that high.
+5. Risk ₹100 per trade. (for test  400/4 )  ==> prefer number of loss trade to 4 and not 400 loss,  
+6. Quantity = minimum of (custom value or [Risk/entry - stop loss)]) ==> if capital is less then stop loss= stop loss-2
+7. Move stop to entry when any of next candles low our entry.
+7. Take profit at 5× risk. (For testing purpose so that I can  get next breakouts)
+9. Stop trading for the day after ₹400 loss. 
+
+
+===============================================
+
+
+
+
+
+
+
+
+
+
+
+1. 	If candle high < EMA5 then set Alert candle = yes.
+
+2. 	Next candle High > Alert_Candle_High then Enter trade. 
+		Set Buy_price = Alert_Candle_High
+		Set Stop_loss = Alert_Candle_Low 
+		Set Quantity = Max_Loss_per_trade/(Alert_Candle_High- Alert_Candle_Low)
+			if (Quantity * Buy_price) > Current amount:
+				then Quantity = Current amount/Buy_price
+	
+3.	If Curent Candle low > Alert_Candle_High then set Stop_loss = Alert_Candle_High
+
+
+=========================================
+
+
+
+
+
+     
+
+
