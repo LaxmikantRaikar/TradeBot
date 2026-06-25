@@ -143,6 +143,7 @@ live_pnl = 0
 
 ltp = None
 signal_time = None
+num_trades = 0
 
 state_lock = threading.Lock()
 
@@ -191,6 +192,7 @@ def monitor_trade():
 	global live_pnl
 	global ltp
 	global signal_time
+	global num_trades
 
 
 	while True:
@@ -216,7 +218,7 @@ def monitor_trade():
 
 		with state_lock:
 
-			if position == "BUY" and ltp > entry:
+			if position == "BUY" and ltp > entry and num_trades < MAX_TRADES:
 
 				position = "BUY_CONFIRMED"
 
@@ -302,6 +304,8 @@ def monitor_trade():
 					round(live_pnl, 2)
 
 						])
+				
+				num_trades =+ 1
 	
 				position = None
 
@@ -352,6 +356,7 @@ def monitor_trade():
 #=======================
 def reset_stop():
 	global stop
+	global num_trades
 
 	try:
 
@@ -381,6 +386,9 @@ def reset_stop():
 			):
 
 				stop = entry
+
+				if num_trades > 0:
+					num_trades -= 1
 
 				print(
 					datetime.now(),
@@ -533,6 +541,9 @@ threading.Thread(
 # ======================
 
 while True:
+	global exit_price
+	global pnl
+
 
 	current_time = datetime.now().time()
 
@@ -558,6 +569,10 @@ while True:
 		)
 
 		break
+	if num_trades >= 4:
+		print(datetime.now(),"Max Loss Trades Reached")
+		break
+
 
 	if position == "BUY_CONFIRMED":
 		reset_stop()
