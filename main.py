@@ -5,6 +5,7 @@ import csv
 import os
 from datetime import datetime, timedelta, time
 from kiteconnect import KiteTicker,KiteConnect
+import sys
 
 
 
@@ -104,7 +105,7 @@ def get_candles(kite, token):
 			print(f"Historical data attempt {attempt+1} failed: {e}")
 
 			if attempt < 2:
-				time.sleep(2)
+				tme.sleep(2)
 			else:
 				raise
 #======================================
@@ -143,7 +144,7 @@ live_pnl = 0
 
 ltp = None
 signal_time = None
-num_trades = 0
+loss_trades = 0
 
 state_lock = threading.Lock()
 
@@ -192,13 +193,14 @@ def monitor_trade():
 	global live_pnl
 	global ltp
 	global signal_time
-	global num_trades
+	global loss_trades
 
 
 	while True:
+
 		if position == "BUY" and signal_time is not None:
 			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 50:  # 1 minute
+			if elapsed > 60:  # 1 minute
 				with state_lock:
 					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
 					position = None
@@ -218,42 +220,24 @@ def monitor_trade():
 
 		with state_lock:
 
-			if position == "BUY" and ltp > entry and num_trades < MAX_TRADES:
+			if position == "BUY" and ltp > entry:
 
 				position = "BUY_CONFIRMED"
-
+				
 				print(
-					"\n===================="
-				)
-
-				print(
+					"\n====================",
 					datetime.now(),
-					"BUY CONFIRMED"
-				)
-
-				print(
+					"BUY CONFIRMED",
 					"Entry:",
-					round(entry, 2)
-				)
-
-				print(
+					round(entry, 2),
 					"Stop:",
-					round(stop, 2)
-				)
-
-				print(
+					round(stop, 2),
 					"Target:",
-					round(target, 2)
-				)
-
-				print(
+					round(target, 2),
 					"Qty:",
-					qty
-				)
-
-				print(
-					"====================\n"
-				)
+					round(qty, 2)
+					)
+				
 
 				log_trade([
 					datetime.now(),
@@ -265,6 +249,17 @@ def monitor_trade():
 					"Target:",
 					round(target, 2),
 						])
+				
+				'''order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_BUY,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)'''
 
 
 			if ltp <= stop and position == "BUY_CONFIRMED":
@@ -290,7 +285,8 @@ def monitor_trade():
 					"PnL:",
 					round(pnl, 2),
 					"Total:",
-					round(live_pnl, 2)
+					round(live_pnl, 2),
+					"====================\n",
 					)
 				
 				log_trade([
@@ -305,9 +301,21 @@ def monitor_trade():
 
 						])
 				
-				num_trades =+ 1
+				'''order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)'''
+				
+				loss_trades += 1
 	
 				position = None
+				signal_time = None
 
 
 			elif ltp >= target and position == "BUY_CONFIRMED":
@@ -330,7 +338,8 @@ def monitor_trade():
 					"PnL:",
 					round(pnl, 2),
 					"Total:",
-					round(live_pnl, 2)
+					round(live_pnl, 2),
+					"====================\n"
 				)
 				
 				
@@ -345,8 +354,19 @@ def monitor_trade():
 					round(live_pnl, 2)
 					])
 				
+				'''order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)'''
 
 				position = None
+				signal_time = None
 
 			tme.sleep(0.1)
 
@@ -356,7 +376,7 @@ def monitor_trade():
 #=======================
 def reset_stop():
 	global stop
-	global num_trades
+	global loss_trades
 
 	try:
 
@@ -375,7 +395,7 @@ def reset_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_low_stop = df["low"].iloc[-1]
+		signal_low_stop = df["low"].iloc[-2]
 
 		with state_lock:
 
@@ -387,8 +407,6 @@ def reset_stop():
 
 				stop = entry
 
-				if num_trades > 0:
-					num_trades -= 1
 
 				print(
 					datetime.now(),
@@ -446,9 +464,9 @@ def evaluate_signal():
 		.mean()
 	)
 
-	signal_high = df["high"].iloc[-1]
-	signal_low = df["low"].iloc[-1]
-	signal_ema = df["EMA"].iloc[-1]
+	signal_high = df["high"].iloc[-2]
+	signal_low = df["low"].iloc[-2]
+	signal_ema = df["EMA"].iloc[-2]
 
 
 	'''print(
@@ -509,10 +527,11 @@ def evaluate_signal():
 # ======================
 try:
 	print(kite.profile())
-	print("REST API OK")
+	print(datetime.now()," REST API OK")
 	
 except Exception as e:
-	print("REST API FAILED:", e)
+	print(datetime.now()," REST API FAILED:", e)
+	sys.exit(1)
 
 
 start_ws()
@@ -541,10 +560,6 @@ threading.Thread(
 # ======================
 
 while True:
-	global exit_price
-	global pnl
-
-
 	current_time = datetime.now().time()
 
 	if current_time < time(9, 30):
@@ -569,7 +584,7 @@ while True:
 		)
 
 		break
-	if num_trades >= 4:
+	if loss_trades >= MAX_TRADES:
 		print(datetime.now(),"Max Loss Trades Reached")
 		break
 
