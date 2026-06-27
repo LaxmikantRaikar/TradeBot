@@ -376,38 +376,55 @@ def monitor_trade():
 #RESET STOP LOSS
 #=======================
 def reset_stop():
-	global stop
+    global stop
 
-	try:
-		df = get_candles(kite, token)
+    try:
 
-		if len(df) < 2:
-			return
+        df = get_candles(kite, token)
 
-		new_stop = df["low"].iloc[-2]
+        if len(df) < 2:
+            return
 
-		with state_lock:
+        previous_low = df["low"].iloc[-2]
 
-			if (
-				position == "BUY_CONFIRMED"
-				and new_stop > stop
-			):
+        with state_lock:
 
-				stop = new_stop
+            if position != "BUY_CONFIRMED":
+                return
 
-				print(
-					datetime.now(),
-					"TRAILING STOP MOVED TO",
-					round(stop, 2)
-				)
+            # -------------------------
+            # Stage 1 : Move to breakeven
+            # -------------------------
+            if stop < entry:
 
-	except Exception as e:
+                if previous_low > entry:
 
-		print(
-			datetime.now(),
-			"RESET STOP ERROR:",
-			e
-		)
+                    stop = entry
+
+                    print(
+                        datetime.now(),
+                        "STOP MOVED TO BREAKEVEN",
+                        round(stop, 2)
+                    )
+
+            # -------------------------
+            # Stage 2 : Trail Stop
+            # -------------------------
+            else:
+
+                if previous_low > stop:
+
+                    stop = previous_low
+
+                    print(
+                        datetime.now(),
+                        "TRAILING STOP",
+                        round(stop, 2)
+                    )
+
+    except Exception as e:
+
+        print(datetime.now(), "RESET STOP ERROR:", e)
 
 # ======================
 # SIGNAL GENERATION
