@@ -395,32 +395,49 @@ def reset_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_low_stop = df["low"].iloc[-2]
+		if len(df) < 2:
+			return
+
+		previous_low = df["low"].iloc[-2]
 
 		with state_lock:
 
-			if (
-				position == "BUY_CONFIRMED"
-				and signal_low_stop > entry
-				and stop < entry
-			):
+			if position != "BUY_CONFIRMED":
+				return
 
-				stop = entry
+			# -------------------------
+			# Stage 1 : Move to breakeven
+			# -------------------------
+			if stop < entry:
 
+				if previous_low > entry:
 
-				print(
-					datetime.now(),
-					"STOP MOVED TO BREAKEVEN",
-					round(stop, 2)
-				)
+					stop = entry
+
+					print(
+						datetime.now(),
+						"STOP MOVED TO BREAKEVEN",
+						round(stop, 2)
+					)
+
+			# -------------------------
+			# Stage 2 : Trail Stop
+			# -------------------------
+			else:
+
+				if previous_low > stop:
+
+					stop = previous_low
+
+					print(
+						datetime.now(),
+						"TRAILING STOP",
+						round(stop, 2)
+					)
 
 	except Exception as e:
 
-		print(
-			datetime.now(),
-			"RESET STOP ERROR:",
-			e
-		)
+		print(datetime.now(), "RESET STOP ERROR:", e)
 
 # ======================
 # SIGNAL GENERATION
