@@ -126,6 +126,7 @@ TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute".
 
 MAX_LOSS_PER_TRADE = abs(MAX_LOSS) / MAX_TRADES
 
+
 # ======================
 # GLOBALS
 # ======================
@@ -376,68 +377,37 @@ def monitor_trade():
 #=======================
 def reset_stop():
 	global stop
-	global loss_trades
 
 	try:
-
-		to_date = datetime.now()
-		from_date = to_date - timedelta(days=1)
-
-		data = kite.historical_data(
-			token,
-			from_date,
-			to_date,
-			"minute"
-		)
-
-		if not data:
-			return
-
-		df = pd.DataFrame(data)
+		df = get_candles(kite, token)
 
 		if len(df) < 2:
 			return
 
-		previous_low = df["low"].iloc[-2]
+		new_stop = df["low"].iloc[-2]
 
 		with state_lock:
 
-			if position != "BUY_CONFIRMED":
-				return
+			if (
+				position == "BUY_CONFIRMED"
+				and new_stop > stop
+			):
 
-			# -------------------------
-			# Stage 1 : Move to breakeven
-			# -------------------------
-			if stop < entry:
+				stop = new_stop
 
-				if previous_low > entry:
-
-					stop = entry
-
-					print(
-						datetime.now(),
-						"STOP MOVED TO BREAKEVEN",
-						round(stop, 2)
-					)
-
-			# -------------------------
-			# Stage 2 : Trail Stop
-			# -------------------------
-			else:
-
-				if previous_low > stop:
-
-					stop = previous_low
-
-					print(
-						datetime.now(),
-						"TRAILING STOP",
-						round(stop, 2)
-					)
+				print(
+					datetime.now(),
+					"TRAILING STOP MOVED TO",
+					round(stop, 2)
+				)
 
 	except Exception as e:
 
-		print(datetime.now(), "RESET STOP ERROR:", e)
+		print(
+			datetime.now(),
+			"RESET STOP ERROR:",
+			e
+		)
 
 # ======================
 # SIGNAL GENERATION
@@ -452,22 +422,8 @@ def evaluate_signal():
 	global signal_time
 	
 
-	to_date = datetime.now()
+	df = get_candles(kite, token)
 
-	from_date = to_date - timedelta(days=1)
-
-	data = kite.historical_data(
-
-		token,
-		from_date,
-		to_date,
-		"minute"
-	)
-
-	if not data:
-		return
-
-	df = pd.DataFrame(data)
 
 	if len(df) < EMA_PERIOD + 2:
 		return
