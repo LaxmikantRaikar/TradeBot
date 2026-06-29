@@ -145,6 +145,7 @@ live_pnl = 0
 ltp = None
 signal_time = None
 loss_trades = 0
+breakeven_reached = False
 
 state_lock = threading.Lock()
 
@@ -194,6 +195,7 @@ def monitor_trade():
 	global ltp
 	global signal_time
 	global loss_trades
+	global breakeven_reached
 
 
 	while True:
@@ -312,10 +314,12 @@ def monitor_trade():
 						market_protection= -1
 						)'''
 				
-				loss_trades += 1
+				if not breakeven_reached:
+					loss_trades += 1
 	
 				position = None
 				signal_time = None
+				breakeven_reached = False
 
 
 			elif ltp >= target and position == "BUY_CONFIRMED":
@@ -367,6 +371,7 @@ def monitor_trade():
 
 				position = None
 				signal_time = None
+				breakeven_reached = False
 
 			tme.sleep(0.1)
 
@@ -377,6 +382,7 @@ def monitor_trade():
 def reset_stop():
 	global stop
 	global loss_trades
+	global breakeven_reached
 
 	try:
 
@@ -406,6 +412,7 @@ def reset_stop():
 			):
 
 				stop = entry
+				breakeven_reached = True
 
 
 				print(
@@ -413,6 +420,7 @@ def reset_stop():
 					"STOP MOVED TO BREAKEVEN",
 					round(stop, 2)
 				)
+
 
 	except Exception as e:
 
