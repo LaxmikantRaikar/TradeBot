@@ -196,6 +196,7 @@ def monitor_trade():
 	global signal_time
 	global loss_trades
 	global breakeven_reached
+	global signal_high
 
 
 	while True:
@@ -221,11 +222,8 @@ def monitor_trade():
 
 
 		with state_lock:
-
-			if position == "BUY" and ltp > entry:
-
+			if position == "BUY" and ltp > signal_high:
 				position = "BUY_CONFIRMED"
-				
 				print(
 					"\n====================",
 					datetime.now(),
@@ -441,10 +439,7 @@ def evaluate_signal():
 	global target
 	global qty
 	global signal_time
-	
-
 	to_date = datetime.now()
-
 	from_date = to_date - timedelta(days=1)
 
 	data = kite.historical_data(
@@ -453,8 +448,7 @@ def evaluate_signal():
 		from_date,
 		to_date,
 		"minute"
-	)
-
+	)	
 	if not data:
 		return
 
@@ -463,67 +457,39 @@ def evaluate_signal():
 	if len(df) < EMA_PERIOD + 2:
 		return
 
-	df["EMA"] = (
-		df["close"]
-		.ewm(
-			span=EMA_PERIOD,
-			adjust=False
-		)
-		.mean()
-	)
+	df["EMA"] = df["close"].ewm(span=EMA_PERIOD, adjust=False).mean()
 
-	signal_high = df["high"].iloc[-2]
-	signal_low = df["low"].iloc[-2]
-	signal_ema = df["EMA"].iloc[-2]
-
-
-	'''print(
-		datetime.now(),
-		"signal_high:",
-		signal_high,
-		"signal_ema:",
-		round(signal_ema, 2),
-	)'''
+	candle = df.iloc[-2]  # last closed candle
 
 	if position is not None:
 		return
-	
 
-	if signal_high < signal_ema and position == None:
-
-		entry_price = signal_high
-		stop_price = signal_low
-
-		risk = entry_price - stop_price
-
-		if risk <= 0:
-			return
-
-		elif risk >0 and risk <=0.5:
-			stop_price = stop_price-(2-risk)
-			risk = entry_price - stop_price
-
-
-		trade_qty = int(MAX_LOSS_PER_TRADE / risk)
-
-
-		if trade_qty <= 0:
-			return
-
-		trade_target = entry_price + (risk * 5)
-
+	if candle["high"] < candle["EMA"] and position == None:
 		with state_lock:
+			signal_high = candle["high"]
+			entry = signal_high
+			stop = candle["low"]
+			risk = entry - stop
+			if risk <= 0:
+				return
 
-			entry = entry_price
-			stop = stop_price
-			target = trade_target
-			qty = trade_qty
+			if risk <= 0.5:
+				stop = stop - (2 - risk)
+				risk = entry - stop
+				
+				if risk <= 0:
+					return
 
+			qty_ = int(MAX_LOSS_PER_TRADE / risk)
+			if qty_ <= 0:
+				return
+
+			target = entry + (risk * 5)
+			qty = qty_
 			signal_time = datetime.now()
-			
 			position = "BUY"
-			print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
 
+		print("BUY SIGNAL", "signal_high:", signal_high, "entry:", entry, "stop:", stop, "target:", target, "qty:", qty)
 			
 
 		
