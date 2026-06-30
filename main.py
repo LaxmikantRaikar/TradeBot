@@ -139,6 +139,7 @@ entry = None
 stop = None
 target = None
 qty = None
+signal_high = None
 
 live_pnl = 0
 
@@ -148,6 +149,14 @@ loss_trades = 0
 breakeven_reached = False
 
 state_lock = threading.Lock()
+
+# Protects latest market price
+price_lock = threading.Lock()
+
+candles = []              # Closed candles
+current_candle = None     # Candle currently forming
+last_minute = None
+candle_lock = threading.Lock()
 
 # ======================
 # WEBSOCKET
@@ -160,10 +169,102 @@ kws = KiteTicker(api_key, access_token)
 
 
 def on_ticks(ws, ticks):
-	global ltp
 
-	if ticks:
-		ltp = ticks[0]["last_price"]
+	global ltp
+	global current_candle
+	global last_minute
+	global candles
+
+	if not ticks:
+		return
+
+	tick = ticks[0]
+
+	# Latest traded price
+	with price_lock:
+		ltp = tick["last_price"]
+
+	# Exchange timestamp
+	ts = tick.get("exchange_timestamp")
+
+	if ts is None:
+		return
+
+	minute = ts.replace(second=0, microsecond=0)
+
+	with candle_lock:
+
+		# -----------------------------------
+		# First tick after program starts
+		# -----------------------------------
+		if current_candle is None:
+
+			current_candle = {
+				"date": minute,
+				"open": ltp,
+				"high": ltp,
+				"low": ltp,
+				"close": ltp
+			}
+
+			last_minute = minute
+			return
+
+		# -----------------------------------
+		# Same candle
+		# -----------------------------------
+		if minute == last_minute:
+
+			current_candle["high"] = max(
+				current_candle["high"],
+				ltp
+			)
+
+			current_candle["low"] = min(
+				current_candle["low"],
+				ltp
+			)
+
+			current_candle["close"] = ltp
+
+			return
+
+		# -----------------------------------
+		# New minute started
+		# Previous candle is complete
+		# -----------------------------------
+
+		completed_candle = current_candle
+		candles.append(completed_candle)
+
+		# Keep last 500 candles
+		if len(candles) > 500:
+			candles.pop(0)
+
+		print(
+			datetime.now(),
+			"CANDLE CLOSED:",
+			completed_candle["date"],
+			"O:", completed_candle["open"],
+			"H:", completed_candle["high"],
+			"L:", completed_candle["low"],
+			"C:", completed_candle["close"]
+		)
+
+		# Create new candle
+		current_candle = {
+			"date": minute,
+			"open": ltp,
+			"high": ltp,
+			"low": ltp,
+			"close": ltp
+		}
+
+		last_minute = minute
+
+	# Evaluate signal AFTER releasing the lock
+	if position is None:
+		evaluate_signal()
 
 
 def on_connect(ws, response):
@@ -172,7 +273,7 @@ def on_connect(ws, response):
 	ws.subscribe([token])
 
 	ws.set_mode(
-		ws.MODE_LTP,
+		ws.MODE_FULL,
 		[token] 
 	)
 
@@ -190,235 +291,236 @@ def start_ws():
 # ======================
 
 def monitor_trade():
+
 	global position
 	global live_pnl
-	global ltp
 	global signal_time
 	global loss_trades
 	global breakeven_reached
-	global signal_high
-
 
 	while True:
+		
+		with price_lock:
+			current_ltp = ltp
 
-		if position == "BUY" and signal_time is not None:
-			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 60:  # 1 minute
+		# Wait for first tick
+		if current_ltp is None:
+			tme.sleep(0.05)
+			continue
+
+		# -----------------------------
+		# Copy shared variables safely
+		# -----------------------------
+		with state_lock:
+
+			local_position = position
+			local_entry = entry
+			local_stop = stop
+			local_target = target
+			local_qty = qty
+			local_signal_time = signal_time
+			local_signal_high = signal_high
+			local_breakeven = breakeven_reached
+			
+
+		# -----------------------------
+		# No trade running
+		# -----------------------------
+		if local_position not in ("BUY", "BUY_CONFIRMED"):
+			tme.sleep(0.05)
+			continue
+
+		# -----------------------------
+		# BUY timeout
+		# -----------------------------
+		if local_position == "BUY":
+
+			elapsed = (
+				datetime.now() - local_signal_time
+			).total_seconds()
+
+			if elapsed > 60:
+
 				with state_lock:
-					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
+
+					if position == "BUY":
+
+						print(
+							datetime.now(),
+							"BUY TIMED OUT"
+						)
+
+						position = None
+						signal_time = None
+
+				continue
+
+			# Breakout confirmation
+			if current_ltp > local_signal_high:
+
+				with state_lock:
+
+					if position == "BUY":
+
+						position = "BUY_CONFIRMED"
+
+						print(
+							"\n===================="
+						)
+
+						print(
+							datetime.now(),
+							"BUY CONFIRMED"
+						)
+
+						print(
+							"Entry:",
+							round(entry,2)
+						)
+
+						print(
+							"Stop:",
+							round(stop,2)
+						)
+
+						print(
+							"Target:",
+							round(target,2)
+						)
+
+						print(
+							"Qty:",
+							qty
+						)
+
+						print(
+							"====================\n"
+						)
+
+						log_trade([
+							datetime.now(),
+							"BUY CONFIRMED",
+							round(entry,2),
+							round(stop,2),
+							round(target,2),
+							qty
+						])
+
+				continue
+
+		# -----------------------------
+		# Stop Loss
+		# -----------------------------
+		if local_position == "BUY_CONFIRMED":
+
+			if current_ltp <= local_stop:
+
+				pnl = (current_ltp - local_entry) * local_qty
+
+				with state_lock:
+
+					live_pnl += pnl
+
+					if not local_breakeven:
+						loss_trades += 1
+
 					position = None
 					signal_time = None
-					tme.sleep(0.1)
-					continue
-
-		if position not in ("BUY", "BUY_CONFIRMED"):
-			tme.sleep(0.1)
-			continue
-
-		if ltp is None:
-			tme.sleep(0.1)
-			continue
-		#print(ltp, stop)
-
-
-		with state_lock:
-			if position == "BUY" and ltp > signal_high:
-				position = "BUY_CONFIRMED"
-				print(
-					"\n====================",
-					datetime.now(),
-					"BUY CONFIRMED",
-					"Entry:",
-					round(entry, 2),
-					"Stop:",
-					round(stop, 2),
-					"Target:",
-					round(target, 2),
-					"Qty:",
-					round(qty, 2)
-					)
-				
-
-				log_trade([
-					datetime.now(),
-					"BUY CONFIRMED",
-					"Entry:",
-					round(entry, 2),
-					"Stop",
-					round(stop, 2),
-					"Target:",
-					round(target, 2),
-						])
-				
-				'''order_id = kite.place_order( 
-						variety=kite.VARIETY_REGULAR,
-						exchange=kite.EXCHANGE_NSE,
-						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_BUY,
-						quantity=qty,
-						product=kite.PRODUCT_MIS,
-						order_type=kite.ORDER_TYPE_MARKET,
-						market_protection= -1
-						)'''
-
-
-			if ltp <= stop and position == "BUY_CONFIRMED":
-				#print(ltp, stop)
-
-
-				exit_price = ltp
-
-				pnl = (exit_price - entry) * qty
-
-				live_pnl += pnl
-
-				print("Exit:",
-				round(exit_price, 2))
+					breakeven_reached = False
 
 				print(
 					datetime.now(),
 					"STOP LOSS HIT",
-					"Exit:",
-					round(exit_price, 2),
-					"Stop:",
-					round(stop, 2),
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2),
-					"====================\n",
-					)
-				
-				log_trade([
-					datetime.now(),
-					"STOP LOSS HIT",
-					"Exit:",
-					exit_price,
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2)
-
-						])
-				
-				'''order_id = kite.place_order( 
-						variety=kite.VARIETY_REGULAR,
-						exchange=kite.EXCHANGE_NSE,
-						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_SELL,
-						quantity=qty,
-						product=kite.PRODUCT_MIS,
-						order_type=kite.ORDER_TYPE_MARKET,
-						market_protection= -1
-						)'''
-				
-				if not breakeven_reached:
-					loss_trades += 1
-	
-				position = None
-				signal_time = None
-				breakeven_reached = False
-
-
-			elif ltp >= target and position == "BUY_CONFIRMED":
-
-				exit_price = ltp
-
-				pnl = (exit_price - entry) * qty
-
-				live_pnl += pnl
-
-				print("Exit:",
-					round(exit_price, 2))
-				
-
-				print(
-					datetime.now(),
-					"TARGET HIT",
-					"Exit:",
-					exit_price,
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2),
-					"====================\n"
+					"Exit:", round(current_ltp,2),
+					"PnL:", round(pnl,2),
+					"Total:", round(live_pnl,2)
 				)
-				
-				
+
+				log_trade([
+					datetime.now(),
+					"STOP LOSS",
+					round(current_ltp,2),
+					round(pnl,2),
+					round(live_pnl,2)
+				])
+
+				continue
+
+			# -----------------------------
+			# Target
+			# -----------------------------
+			if current_ltp >= local_target:
+
+				pnl = (current_ltp - local_entry) * local_qty
+
+				with state_lock:
+
+					live_pnl += pnl
+
+					position = None
+					signal_time = None
+					breakeven_reached = False
+
+				print(
+					datetime.now(),
+					"TARGET HIT",
+					"Exit:", round(current_ltp,2),
+					"PnL:", round(pnl,2),
+					"Total:", round(live_pnl,2)
+				)
+
 				log_trade([
 					datetime.now(),
 					"TARGET HIT",
-					"Exit:",
-					exit_price,
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2)
-					])
-				
-				'''order_id = kite.place_order( 
-						variety=kite.VARIETY_REGULAR,
-						exchange=kite.EXCHANGE_NSE,
-						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_SELL,
-						quantity=qty,
-						product=kite.PRODUCT_MIS,
-						order_type=kite.ORDER_TYPE_MARKET,
-						market_protection= -1
-						)'''
+					round(current_ltp,2),
+					round(pnl,2),
+					round(live_pnl,2)
+				])
 
-				position = None
-				signal_time = None
-				breakeven_reached = False
-
-			tme.sleep(0.1)
+		tme.sleep(0.05)
 
 
 #=======================
-#RESET STOP LOSS
+# RESET STOP LOSS
 #=======================
+
 def reset_stop():
+
 	global stop
 	global loss_trades
 	global breakeven_reached
 
 	try:
 
-		to_date = datetime.now()
-		from_date = to_date - timedelta(days=1)
+		with candle_lock:
 
-		data = kite.historical_data(
-			token,
-			from_date,
-			to_date,
-			"minute"
-		)
+			if len(candles) < 2:
+				return
 
-		if not data:
-			return
+			df = pd.DataFrame(candles.copy())
 
-		df = pd.DataFrame(data)
-
-		signal_low_stop = df["low"].iloc[-2]
+		# Last completed candle
+		signal_low_stop = df.iloc[-1]["low"]
 
 		with state_lock:
 
+			local_entry = entry
+			local_stop = stop
+			local_position = position
+
 			if (
-				position == "BUY_CONFIRMED"
-				and signal_low_stop > entry
-				and stop < entry
-			):
-
-				stop = entry
+				local_position == "BUY_CONFIRMED"
+				and signal_low_stop > local_entry
+				and local_stop < local_entry
+				):
+				stop = local_entry
 				breakeven_reached = True
-
 
 				print(
 					datetime.now(),
 					"STOP MOVED TO BREAKEVEN",
 					round(stop, 2)
 				)
-
 
 	except Exception as e:
 
@@ -433,63 +535,114 @@ def reset_stop():
 # ======================
 
 def evaluate_signal():
+
 	global position
 	global entry
 	global stop
 	global target
 	global qty
 	global signal_time
-	to_date = datetime.now()
-	from_date = to_date - timedelta(days=1)
+	global signal_high
 
-	data = kite.historical_data(
+	with candle_lock:
 
-		token,
-		from_date,
-		to_date,
-		"minute"
-	)	
-	if not data:
-		return
-
-	df = pd.DataFrame(data)
+		# Copy candles to avoid modification while calculating EMA
+		df = pd.DataFrame(candles.copy())
 
 	if len(df) < EMA_PERIOD + 2:
 		return
 
-	df["EMA"] = df["close"].ewm(span=EMA_PERIOD, adjust=False).mean()
+	# Calculate EMA
+	df["EMA"] = df["close"].ewm(
+		span=EMA_PERIOD,
+		adjust=False
+	).mean()
 
-	candle = df.iloc[-2]  # last closed candle
+	# Last candle is already CLOSED because on_ticks()
+	# adds only completed candles.
+	candle = df.iloc[-1]
 
-	if position is not None:
-		return
+	with state_lock:
+		if position is not None:
+			return
 
-	if candle["high"] < candle["EMA"] and position == None:
+	# BUY condition
+	if candle["high"] < candle["EMA"]:
+
 		with state_lock:
+
 			signal_high = candle["high"]
+
 			entry = signal_high
+
 			stop = candle["low"]
+
 			risk = entry - stop
+
 			if risk <= 0:
 				return
 
+			# Minimum stop distance
 			if risk <= 0.5:
+
 				stop = stop - (2 - risk)
+
 				risk = entry - stop
-				
+
 				if risk <= 0:
 					return
 
 			qty_ = int(MAX_LOSS_PER_TRADE / risk)
+
+			#qty_ = min(qty_, MAX_QTY)
+
 			if qty_ <= 0:
 				return
 
 			target = entry + (risk * 5)
+
 			qty = qty_
+
 			signal_time = datetime.now()
+
 			position = "BUY"
 
-		print("BUY SIGNAL", "signal_high:", signal_high, "entry:", entry, "stop:", stop, "target:", target, "qty:", qty)
+		print(
+			"\n========================"
+		)
+
+		print(
+			datetime.now(),
+			"BUY SIGNAL"
+		)
+
+		print(
+			"Time   :", candle["date"]
+		)
+
+		print(
+			"Entry  :", round(entry,2)
+		)
+
+		print(
+			"Stop   :", round(stop,2)
+		)
+
+		print(
+			"Target :", round(target,2)
+		)
+
+		print(
+			"Qty    :", qty
+		)
+
+		print(
+			"EMA    :", round(candle["EMA"],2)
+		)
+
+		print(
+			"========================\n"
+		)
 			
 
 		
@@ -507,6 +660,17 @@ except Exception as e:
 	print(datetime.now()," REST API FAILED:", e)
 	sys.exit(1)
 
+# ======================
+# Load historical candles once
+# ======================
+
+df = get_candles(kite, token)
+
+with candle_lock:
+	candles = df.to_dict("records")
+
+print(f"Loaded {len(candles)} historical candles")
+
 
 start_ws()
 
@@ -514,7 +678,11 @@ start_ws()
 timeout = 30
 start = tme.time()
 
-while ltp is None:
+while True:
+
+	with price_lock:
+		if ltp is not None:
+			break
 
 	if tme.time() - start > timeout:
 		print("No ticks received.")
@@ -533,23 +701,31 @@ threading.Thread(
 # MAIN LOOP
 # ======================
 
+# ======================
+# MAIN LOOP
+# ======================
+
 while True:
+
 	current_time = datetime.now().time()
 
+	# Before market opens
 	if current_time < time(9, 30):
-		tme.sleep(30)
+		tme.sleep(10)
 		continue
 
-	if current_time > time(15, 15):
+	# Market closed
+	if current_time >= time(15, 15):
 
 		print(
 			datetime.now(),
 			"Market Closed"
 		)
+
 		kws.close()
-		
 		break
 
+	# Daily loss limit
 	if live_pnl <= MAX_LOSS:
 
 		print(
@@ -557,22 +733,23 @@ while True:
 			"Max Loss Reached"
 		)
 
+		kws.close()
 		break
+
+	# Maximum losing trades
 	if loss_trades >= MAX_TRADES:
-		print(datetime.now(),"Max Loss Trades Reached")
+
+		print(
+			datetime.now(),
+			"Max Loss Trades Reached"
+		)
+
+		kws.close()
 		break
 
-
+	# Manage existing trade
 	if position == "BUY_CONFIRMED":
 		reset_stop()
 
-	if position is None:
-		evaluate_signal()
-		print('Signal search started at: ',current_time)
-
-	current_second = datetime.now().second
-
-	sleep_time = 60 - current_second
-
-
-	tme.sleep(sleep_time) 
+	# Small sleep to reduce CPU usage
+	tme.sleep(0.5) 
