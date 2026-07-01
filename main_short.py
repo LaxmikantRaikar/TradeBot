@@ -1,5 +1,5 @@
-# This is long position trading bot using Kite Connect API. It monitors the stock price in real-time, evaluates trading signals based on EMA and price action, and manages trades by setting entry, stop-loss, and target levels. It also logs trade details to a CSV file for record-keeping.
-# Version 1.0
+# This is short position trading bot using Kite Connect API. It monitors the stock price in real-time, evaluates trading signals based on EMA and price action, and manages trades by setting entry, stop-loss, and target levels. It also logs trade details to a CSV file for record-keeping.
+# version 1.0 
 
 import pandas as pd
 import threading
@@ -203,17 +203,17 @@ def monitor_trade():
 
 	while True:
 
-		if position == "BUY" and signal_time is not None:
+		if position == "SHORT" and signal_time is not None:
 			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 60:  # 1 minute
+			if elapsed > 58:  # 1 minute
 				with state_lock:
-					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
+					print(datetime.now(), "SHORT TIMED OUT — price never broke below entry", round(entry, 2))
 					position = None
 					signal_time = None
 					tme.sleep(0.1)
 					continue
 
-		if position not in ("BUY", "BUY_CONFIRMED"):
+		if position not in ("SHORT", "SHORT_CONFIRMED"):
 			tme.sleep(0.1)
 			continue
 
@@ -225,14 +225,14 @@ def monitor_trade():
 
 		with state_lock:
 
-			if position == "BUY" and ltp > entry:
+			if position == "SHORT" and ltp < entry:
 
-				position = "BUY_CONFIRMED"
+				position = "SHORT_CONFIRMED"
 				
 				print(
 					"\n====================",
 					datetime.now(),
-					"BUY CONFIRMED",
+					"SHORT CONFIRMED",
 					"Entry:",
 					round(entry, 2),
 					"Stop:",
@@ -246,7 +246,7 @@ def monitor_trade():
 
 				log_trade([
 					datetime.now(),
-					"BUY CONFIRMED",
+					"SHORT CONFIRMED",
 					"Entry:",
 					round(entry, 2),
 					"Stop",
@@ -259,7 +259,7 @@ def monitor_trade():
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_BUY,
+						transaction_type=kite.TRANSACTION_TYPE_SELL,
 						quantity=qty,
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
@@ -267,13 +267,13 @@ def monitor_trade():
 						)'''
 
 
-			if ltp <= stop and position == "BUY_CONFIRMED":
+			if ltp >= stop and position == "SHORT_CONFIRMED":
 				#print(ltp, stop)
 
 
 				exit_price = ltp
 
-				pnl = (exit_price - entry) * qty
+				pnl = (entry - exit_price) * qty
 
 				live_pnl += pnl
 
@@ -310,7 +310,7 @@ def monitor_trade():
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						transaction_type=kite.TRANSACTION_TYPE_BUY,
 						quantity=qty,
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
@@ -325,11 +325,11 @@ def monitor_trade():
 				breakeven_reached = False
 
 
-			elif ltp >= target and position == "BUY_CONFIRMED":
+			elif ltp <= target and position == "SHORT_CONFIRMED":
 
 				exit_price = ltp
 
-				pnl = (exit_price - entry) * qty
+				pnl = (entry - exit_price) * qty
 
 				live_pnl += pnl
 
@@ -365,7 +365,7 @@ def monitor_trade():
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						transaction_type=kite.TRANSACTION_TYPE_BUY,
 						quantity=qty,
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
@@ -382,7 +382,7 @@ def monitor_trade():
 #=======================
 #RESET STOP LOSS
 #=======================
-def reset_stop():
+def reset_short_stop():
 	global stop
 	global loss_trades
 	global breakeven_reached
@@ -404,14 +404,14 @@ def reset_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_low_stop = df["low"].iloc[-2]
+		signal_high_stop = df["high"].iloc[-2]
 
 		with state_lock:
 
 			if (
-				position == "BUY_CONFIRMED"
-				and signal_low_stop > entry
-				and stop < entry
+				position == "SHORT_CONFIRMED"
+				and signal_high_stop < entry
+				and stop > entry
 			):
 
 				stop = entry
@@ -437,7 +437,7 @@ def reset_stop():
 # SIGNAL GENERATION
 # ======================
 
-def evaluate_signal():
+def evaluate_short_signal():
 	global position
 	global entry
 	global stop
@@ -492,20 +492,21 @@ def evaluate_signal():
 		return
 	
 
-	if signal_high < signal_ema and position == None:
+	if signal_low > signal_ema and position == None:
 
-		entry_price = signal_high
-		stop_price = signal_low
+		entry_price = signal_low  #2128.6
+		stop_price = signal_high  #2129
 
-		risk = entry_price - stop_price
+		risk = stop_price - entry_price  
+
+		#risk = 2129-2128.6 = 0.4
 
 		if risk <= 0:
 			return
 
 		elif risk >0 and risk < 1:
-			stop_price = stop_price-(1-risk)
-			risk = entry_price - stop_price
-
+			stop_price = stop_price+(1-risk)  # 2129+(1-0.4) = 2129.6
+			risk = stop_price - entry_price   #risk = 2129.6-2128.6 = 1
 
 		trade_qty = int(MAX_LOSS_PER_TRADE / risk)
 
@@ -524,13 +525,8 @@ def evaluate_signal():
 
 			signal_time = datetime.now()
 			
-			position = "BUY"
-			print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
-
-			
-
-		
-			
+			position = "SHORT"
+			print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
 
 
 # ======================
@@ -600,11 +596,11 @@ while True:
 		break
 
 
-	if position == "BUY_CONFIRMED":
-		reset_stop()
+	if position == "SHORT_CONFIRMED":
+		reset_short_stop()
 
 	if position is None:
-		evaluate_signal()
+		evaluate_short_signal()
 		print('Signal search started at: ',current_time)
 
 	current_second = datetime.now().second
