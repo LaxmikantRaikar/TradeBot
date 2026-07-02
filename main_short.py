@@ -15,7 +15,7 @@ import sys
 
 #========================================
 #Logger
-FILE = "trades.csv"
+FILE = "trades_short.csv"
 
 
 def init_log():
