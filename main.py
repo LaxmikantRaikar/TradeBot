@@ -1,5 +1,6 @@
 # This is long position trading bot using Kite Connect API. It monitors the stock price in real-time, evaluates trading signals based on EMA and price action, and manages trades by setting entry, stop-loss, and target levels. It also logs trade details to a CSV file for record-keeping.
 # Version 1.0
+# changed the candle index from -2 to -1 for signal generation and stop loss reset.
 
 import pandas as pd
 import threading
@@ -230,7 +231,7 @@ def monitor_trade():
 				position = "BUY_CONFIRMED"
 				
 				print(
-					"\n====================",
+					"\n====================\n",
 					datetime.now(),
 					"BUY CONFIRMED",
 					"Entry:",
@@ -291,7 +292,7 @@ def monitor_trade():
 					round(pnl, 2),
 					"Total:",
 					round(live_pnl, 2),
-					"====================\n",
+					"\n====================\n",
 					)
 				
 				log_trade([
@@ -346,7 +347,7 @@ def monitor_trade():
 					round(pnl, 2),
 					"Total:",
 					round(live_pnl, 2),
-					"====================\n"
+					"\n====================\n"
 				)
 				
 				
@@ -404,7 +405,7 @@ def reset_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_low_stop = df["low"].iloc[-2]
+		signal_low_stop = df["low"].iloc[-1]
 
 		with state_lock:
 
@@ -475,18 +476,18 @@ def evaluate_signal():
 		.mean()
 	)
 
-	signal_high = df["high"].iloc[-2]
-	signal_low = df["low"].iloc[-2]
-	signal_ema = df["EMA"].iloc[-2]
+	signal_high = df["high"].iloc[-1]
+	signal_low = df["low"].iloc[-1]
+	signal_ema = df["EMA"].iloc[-1]
 
 
-	'''print(
+	print(
 		datetime.now(),
 		"signal_high:",
 		signal_high,
 		"signal_ema:",
 		round(signal_ema, 2),
-	)'''
+	)
 
 	if position is not None:
 		return
