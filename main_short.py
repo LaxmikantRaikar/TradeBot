@@ -206,7 +206,7 @@ def monitor_trade():
 
 		if position == "SHORT" and signal_time is not None:
 			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 58:  # 1 minute
+			if elapsed > 60:  # 1 minute
 				with state_lock:
 					print(datetime.now(), "SHORT TIMED OUT — price never broke below entry", round(entry, 2))
 					position = None
