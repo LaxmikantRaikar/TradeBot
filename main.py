@@ -206,7 +206,7 @@ def monitor_trade():
 
 		if position == "BUY" and signal_time is not None:
 			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 60:  # 1 minute
+			if elapsed > 58:  # 1 minute
 				with state_lock:
 					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
 					position = None
@@ -481,13 +481,13 @@ def evaluate_signal():
 	signal_ema = df["EMA"].iloc[-1]
 
 
-	print(
+	'''print(
 		datetime.now(),
 		"signal_high:",
 		signal_high,
 		"signal_ema:",
 		round(signal_ema, 2),
-	)
+	)'''
 
 	if position is not None:
 		return
@@ -526,7 +526,7 @@ def evaluate_signal():
 			signal_time = datetime.now()
 			
 			position = "BUY"
-			print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
+			'''print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)'''
 
 			
 
@@ -585,17 +585,16 @@ while True:
 			"Market Closed"
 		)
 		kws.close()
-		
 		break
 
 	if live_pnl <= MAX_LOSS:
-
 		print(
 			datetime.now(),
 			"Max Loss Reached"
 		)
-
 		break
+
+
 	if loss_trades >= MAX_TRADES:
 		print(datetime.now(),"Max Loss Trades Reached")
 		break
@@ -606,7 +605,7 @@ while True:
 
 	if position is None:
 		evaluate_signal()
-		print('Signal search started at: ',current_time)
+		'''print('Signal search started at: ',current_time)'''
 
 	current_second = datetime.now().second
 
