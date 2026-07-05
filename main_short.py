@@ -2,6 +2,9 @@
 # version 1.0 
 # fixed bug of trade_target value calculation.
 # changed the candle index from -2 to -1 for signal generation and stop loss reset.
+# this is beta version with live trading activated. Please use it with caution and at your own risk. The author is not responsible for any financial loss incurred while using this bot.
+# version 1.1
+
 import pandas as pd
 import threading
 import time as tme
@@ -208,7 +211,7 @@ def monitor_trade():
 			elapsed = (datetime.now() - signal_time).total_seconds()
 			if elapsed > 58:  # 1 minute
 				with state_lock:
-					print(datetime.now(), "SHORT TIMED OUT — price never broke below entry", round(entry, 2))
+					#print(datetime.now(), "SHORT TIMED OUT — price never broke below entry", round(entry, 2))
 					position = None
 					signal_time = None
 					tme.sleep(0.1)
@@ -256,7 +259,7 @@ def monitor_trade():
 					round(target, 2),
 						])
 				
-				'''order_id = kite.place_order( 
+				order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
@@ -265,7 +268,7 @@ def monitor_trade():
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
 						market_protection= -1
-						)'''
+						)
 
 
 			if ltp >= stop and position == "SHORT_CONFIRMED":
@@ -278,8 +281,8 @@ def monitor_trade():
 
 				live_pnl += pnl
 
-				print("Exit:",
-				round(exit_price, 2))
+				'''print("Exit:",
+				round(exit_price, 2))'''
 
 				print(
 					datetime.now(),
@@ -307,7 +310,7 @@ def monitor_trade():
 
 						])
 				
-				'''order_id = kite.place_order( 
+				order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
@@ -316,63 +319,11 @@ def monitor_trade():
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
 						market_protection= -1
-						)'''
+						)
 				
 				if not breakeven_reached:
 					loss_trades += 1
 	
-				position = None
-				signal_time = None
-				breakeven_reached = False
-
-
-			elif ltp <= target and position == "SHORT_CONFIRMED":
-
-				exit_price = ltp
-
-				pnl = (entry - exit_price) * qty
-
-				live_pnl += pnl
-
-				print("Exit:",
-					round(exit_price, 2))
-				
-
-				print(
-					datetime.now(),
-					"TARGET HIT",
-					"Exit:",
-					exit_price,
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2),
-					"\n====================\n"
-				)
-				
-				
-				log_trade([
-					datetime.now(),
-					"TARGET HIT",
-					"Exit:",
-					exit_price,
-					"PnL:",
-					round(pnl, 2),
-					"Total:",
-					round(live_pnl, 2)
-					])
-				
-				'''order_id = kite.place_order( 
-						variety=kite.VARIETY_REGULAR,
-						exchange=kite.EXCHANGE_NSE,
-						tradingsymbol=SYM,
-						transaction_type=kite.TRANSACTION_TYPE_BUY,
-						quantity=qty,
-						product=kite.PRODUCT_MIS,
-						order_type=kite.ORDER_TYPE_MARKET,
-						market_protection= -1
-						)'''
-
 				position = None
 				signal_time = None
 				breakeven_reached = False
@@ -419,11 +370,11 @@ def reset_short_stop():
 				breakeven_reached = True
 
 
-				print(
+				'''print(
 					datetime.now(),
 					"STOP MOVED TO BREAKEVEN",
 					round(stop, 2)
-				)
+				)'''
 
 
 	except Exception as e:
@@ -534,7 +485,7 @@ def evaluate_short_signal():
 # STARTUP
 # ======================
 try:
-	print(kite.profile())
+	#print(kite.profile())
 	print(datetime.now()," REST API OK")
 	
 except Exception as e:
