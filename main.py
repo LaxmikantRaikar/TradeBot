@@ -366,20 +366,7 @@ def reset_stop():
 
 	try:
 
-		to_date = datetime.now()
-		from_date = to_date - timedelta(days=1)
-
-		data = kite.historical_data(
-			token,
-			from_date,
-			to_date,
-			"minute"
-		)
-
-		if not data:
-			return
-
-		df = pd.DataFrame(data)
+		df = get_candles(kite, token)
 
 		signal_low_stop = df["low"].iloc[-1]
 
