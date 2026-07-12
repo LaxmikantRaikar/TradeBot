@@ -127,6 +127,7 @@ MAX_LOSS = -400
 SYM = "HINDUNILVR"
 EXCHANGE = "NSE"
 TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute".
+TRAIL_GAP = 4  # chandelier trailing stop: stop trails this many points below the highest price seen since confirmation
 
 MAX_LOSS_PER_TRADE = abs(MAX_LOSS) / MAX_TRADES
 
@@ -150,10 +151,7 @@ ltp = None
 signal_time = None
 loss_trades = 0
 breakeven_reached = False
-highest_price = None
-initial_risk = None
-TRAIL_GAP = 4.0      # points
-latest_df = None
+highest_price = None  # highest ltp seen since BUY_CONFIRMED, used for chandelier trailing stop
 
 state_lock = threading.Lock()
 
@@ -198,159 +196,211 @@ def start_ws():
 # ======================
 
 def monitor_trade():
-
 	global position
 	global live_pnl
 	global ltp
 	global signal_time
 	global loss_trades
+	global breakeven_reached
 	global highest_price
 	global stop
-	global initial_risk
+
 
 	while True:
 
 		if position == "BUY" and signal_time is not None:
-
 			elapsed = (datetime.now() - signal_time).total_seconds()
-
-			if elapsed > 58:
-
+			if elapsed > 58:  # 1 minute
 				with state_lock:
-
-					print(
-						datetime.now(),
-						"BUY TIMED OUT"
-					)
-
+					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
 					position = None
 					signal_time = None
+					highest_price = None
+					tme.sleep(0.1)
+					continue
 
-				tme.sleep(0.1)
-				continue
-
-		if position not in ("BUY","BUY_CONFIRMED"):
-
+		if position not in ("BUY", "BUY_CONFIRMED"):
 			tme.sleep(0.1)
 			continue
 
 		if ltp is None:
-
 			tme.sleep(0.1)
 			continue
+		#print(ltp, stop)
+
 
 		with state_lock:
-
-			###########################################
-			# BUY CONFIRMATION
-			###########################################
 
 			if position == "BUY" and ltp > entry:
 
 				position = "BUY_CONFIRMED"
-
 				highest_price = ltp
 
 				print(
 					"\n====================\n",
 					datetime.now(),
 					"BUY CONFIRMED",
-					"Entry:", round(entry,2),
-					"Stop:", round(stop,2),
-					"Qty:", qty
-				)
-
-			###########################################
-			# STOP LOSS
-			###########################################
-
-			if position == "BUY_CONFIRMED" and ltp <= stop:
-
-				exit_price = ltp
-
-				pnl = (exit_price-entry)*qty
-
-				live_pnl += pnl
-
-				print(
-					datetime.now(),
-					"EXIT",
-					round(exit_price,2),
-					"PnL:",
-					round(pnl,2),
-					"Total:",
-					round(live_pnl,2)
-				)
+					"Entry:",
+					round(entry, 2),
+					"Stop:",
+					round(stop, 2),
+					"Target:",
+					round(target, 2),
+					"Qty:",
+					round(qty, 2)
+					)
+				
 
 				log_trade([
 					datetime.now(),
-					"EXIT",
-					exit_price,
-					round(pnl,2),
-					round(live_pnl,2)
-				])
+					"BUY CONFIRMED",
+					"Entry:",
+					round(entry, 2),
+					"Stop",
+					round(stop, 2),
+					"Target:",
+					round(target, 2),
+						])
+				
+				'''order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_BUY,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)'''
 
+
+			if position == "BUY_CONFIRMED":
+
+				if highest_price is None or ltp > highest_price:
+					highest_price = ltp
+
+				trail_stop = highest_price - TRAIL_GAP
+
+				if trail_stop > stop:
+					stop = trail_stop
+					breakeven_reached = breakeven_reached or stop >= entry
+					print(
+						datetime.now(),
+						"TRAIL STOP UPDATED",
+						round(stop, 2),
+						"(high:",
+						round(highest_price, 2),
+						")"
+					)
+
+			if ltp <= stop and position == "BUY_CONFIRMED":
+				#print(ltp, stop)
+
+
+				exit_price = ltp
+
+				pnl = (exit_price - entry) * qty
+
+				live_pnl += pnl
+
+				exit_label = "TRAIL STOP HIT" if pnl > 0 else "STOP LOSS HIT"
+
+				print("Exit:",
+				round(exit_price, 2))
+
+				print(
+					datetime.now(),
+					exit_label,
+					"Exit:",
+					round(exit_price, 2),
+					"Stop:",
+					round(stop, 2),
+					"PnL:",
+					round(pnl, 2),
+					"Total:",
+					round(live_pnl, 2),
+					"\n====================\n",
+					)
+				
+				log_trade([
+					datetime.now(),
+					exit_label,
+					"Exit:",
+					exit_price,
+					"PnL:",
+					round(pnl, 2),
+					"Total:",
+					round(live_pnl, 2)
+
+						])
+				
+				'''order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)'''
+				
+				if not breakeven_reached:
+					loss_trades += 1
+	
 				position = None
 				signal_time = None
+				breakeven_reached = False
 				highest_price = None
-				initial_risk = None
 
-		tme.sleep(0.05)
+			tme.sleep(0.1)
 
 
 #=======================
 #RESET STOP LOSS
 #=======================
 def reset_stop():
-
-	global highest_price
 	global stop
-	global initial_risk
-	global latest_df
+	global loss_trades
+	global breakeven_reached
 
 	try:
 
-		if position != "BUY_CONFIRMED":
+		to_date = datetime.now()
+		from_date = to_date - timedelta(days=1)
+
+		data = kite.historical_data(
+			token,
+			from_date,
+			to_date,
+			"minute"
+		)
+
+		if not data:
 			return
 
-		if latest_df is None:
-			return
+		df = pd.DataFrame(data)
 
-		df = latest_df
-
-		last_high = df["high"].iloc[-1]
+		signal_low_stop = df["low"].iloc[-1]
 
 		with state_lock:
 
-			####################################
-			# Update Highest High
-			####################################
+			if (
+				position == "BUY_CONFIRMED"
+				and signal_low_stop > entry
+				and stop < entry
+			):
 
-			if highest_price is None:
+				stop = entry
+				breakeven_reached = True
 
-				highest_price = last_high
-
-			elif last_high > highest_price:
-
-				highest_price = last_high
-
-			####################################
-			# Chandelier Trail
-			####################################
-
-			trail_stop = highest_price - (2 * initial_risk)
-
-			if trail_stop > stop:
-
-				stop = trail_stop
 
 				print(
 					datetime.now(),
-					"TRAIL STOP MOVED",
-					round(stop,2),
-					"Highest:",
-					round(highest_price,2)
+					"STOP MOVED TO BREAKEVEN",
+					round(stop, 2)
 				)
+
 
 	except Exception as e:
 
@@ -371,8 +421,6 @@ def evaluate_signal():
 	global target
 	global qty
 	global signal_time
-	global highest_price
-	global initial_risk
 	
 
 	to_date = datetime.now()
@@ -392,10 +440,6 @@ def evaluate_signal():
 
 	df = pd.DataFrame(data)
 
-	global latest_df
-
-	latest_df = df.copy()
-
 	if len(df) < EMA_PERIOD + 2:
 		return
 
@@ -413,13 +457,13 @@ def evaluate_signal():
 	signal_ema = df["EMA"].iloc[-1]
 
 
-	'''print(
+	print(
 		datetime.now(),
 		"signal_high:",
 		signal_high,
 		"signal_ema:",
 		round(signal_ema, 2),
-	)'''
+	)
 
 	if position is not None:
 		return
@@ -431,7 +475,6 @@ def evaluate_signal():
 		stop_price = signal_low
 
 		risk = entry_price - stop_price
-		initial_risk = risk
 
 		if risk <= 0:
 			return
@@ -441,20 +484,22 @@ def evaluate_signal():
 			risk = entry_price - stop_price
 
 
-		trade_qty = int(MAX_LOSS_PER_TRADE / risk)
+		trade_qty = 50
+		#trade_qty = int(MAX_LOSS_PER_TRADE / risk)
 
 
 		if trade_qty <= 0:
 			return
 
-		trade_target = entry_price + (risk * 5)
+		trade_target = entry_price + 10
+		#trade_target = entry_price + (risk * 5)
 
 		with state_lock:
 
 			entry = entry_price
 			stop = stop_price
+			target = trade_target
 			qty = trade_qty
-			highest_price = None
 
 			signal_time = datetime.now()
 			
