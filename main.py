@@ -127,7 +127,6 @@ MAX_LOSS = -400
 SYM = "HINDUNILVR"
 EXCHANGE = "NSE"
 TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute".
-TRAIL_GAP = 4  # chandelier trailing stop: stop trails this many points below the highest price seen since confirmation
 
 MAX_LOSS_PER_TRADE = abs(MAX_LOSS) / MAX_TRADES
 
@@ -151,7 +150,7 @@ ltp = None
 signal_time = None
 loss_trades = 0
 breakeven_reached = False
-highest_price = None  # highest ltp seen since BUY_CONFIRMED, used for chandelier trailing stop
+previous_low = 0
 
 state_lock = threading.Lock()
 
@@ -202,8 +201,7 @@ def monitor_trade():
 	global signal_time
 	global loss_trades
 	global breakeven_reached
-	global highest_price
-	global stop
+	global previous_low
 
 
 	while True:
@@ -215,7 +213,6 @@ def monitor_trade():
 					print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
 					position = None
 					signal_time = None
-					highest_price = None
 					tme.sleep(0.1)
 					continue
 
@@ -234,8 +231,7 @@ def monitor_trade():
 			if position == "BUY" and ltp > entry:
 
 				position = "BUY_CONFIRMED"
-				highest_price = ltp
-
+				
 				print(
 					"\n====================\n",
 					datetime.now(),
@@ -274,25 +270,6 @@ def monitor_trade():
 						)'''
 
 
-			if position == "BUY_CONFIRMED":
-
-				if highest_price is None or ltp > highest_price:
-					highest_price = ltp
-
-				trail_stop = highest_price - TRAIL_GAP
-
-				if trail_stop > stop:
-					stop = trail_stop
-					breakeven_reached = breakeven_reached or stop >= entry
-					print(
-						datetime.now(),
-						"TRAIL STOP UPDATED",
-						round(stop, 2),
-						"(high:",
-						round(highest_price, 2),
-						")"
-					)
-
 			if ltp <= stop and position == "BUY_CONFIRMED":
 				#print(ltp, stop)
 
@@ -303,14 +280,12 @@ def monitor_trade():
 
 				live_pnl += pnl
 
-				exit_label = "TRAIL STOP HIT" if pnl > 0 else "STOP LOSS HIT"
-
 				print("Exit:",
 				round(exit_price, 2))
 
 				print(
 					datetime.now(),
-					exit_label,
+					"STOP LOSS HIT",
 					"Exit:",
 					round(exit_price, 2),
 					"Stop:",
@@ -324,7 +299,7 @@ def monitor_trade():
 				
 				log_trade([
 					datetime.now(),
-					exit_label,
+					"STOP LOSS HIT",
 					"Exit:",
 					exit_price,
 					"PnL:",
@@ -351,7 +326,58 @@ def monitor_trade():
 				position = None
 				signal_time = None
 				breakeven_reached = False
-				highest_price = None
+
+
+			'''elif ltp >= target and position == "BUY_CONFIRMED":
+
+				exit_price = ltp
+
+				pnl = (exit_price - entry) * qty
+
+				live_pnl += pnl
+
+				print("Exit:",
+					round(exit_price, 2))
+				
+
+				print(
+					datetime.now(),
+					"TARGET HIT",
+					"Exit:",
+					exit_price,
+					"PnL:",
+					round(pnl, 2),
+					"Total:",
+					round(live_pnl, 2),
+					"\n====================\n"
+				)
+				
+				
+				log_trade([
+					datetime.now(),
+					"TARGET HIT",
+					"Exit:",
+					exit_price,
+					"PnL:",
+					round(pnl, 2),
+					"Total:",
+					round(live_pnl, 2)
+					])
+				
+				order_id = kite.place_order( 
+						variety=kite.VARIETY_REGULAR,
+						exchange=kite.EXCHANGE_NSE,
+						tradingsymbol=SYM,
+						transaction_type=kite.TRANSACTION_TYPE_SELL,
+						quantity=qty,
+						product=kite.PRODUCT_MIS,
+						order_type=kite.ORDER_TYPE_MARKET,
+						market_protection= -1
+						)
+
+				position = None
+				signal_time = None
+				breakeven_reached = False'''
 
 			tme.sleep(0.1)
 
@@ -363,10 +389,24 @@ def reset_stop():
 	global stop
 	global loss_trades
 	global breakeven_reached
+	global previous_low
 
 	try:
 
-		df = get_candles(kite, token)
+		to_date = datetime.now()
+		from_date = to_date - timedelta(days=1)
+
+		data = kite.historical_data(
+			token,
+			from_date,
+			to_date,
+			"minute"
+		)
+
+		if not data:
+			return
+
+		df = pd.DataFrame(data)
 
 		signal_low_stop = df["low"].iloc[-1]
 
@@ -374,17 +414,17 @@ def reset_stop():
 
 			if (
 				position == "BUY_CONFIRMED"
-				and signal_low_stop > entry
-				and stop < entry
+				and signal_low_stop > previous_low
+				and stop < previous_low
 			):
 
-				stop = entry
+				stop = previous_low
 				breakeven_reached = True
-
+				previous_low = stop
 
 				print(
 					datetime.now(),
-					"STOP MOVED TO BREAKEVEN",
+					"STOP MOVED TO TRAILING STOP",
 					round(stop, 2)
 				)
 
@@ -408,6 +448,7 @@ def evaluate_signal():
 	global target
 	global qty
 	global signal_time
+	global previous_low
 	
 
 	to_date = datetime.now()
@@ -444,13 +485,13 @@ def evaluate_signal():
 	signal_ema = df["EMA"].iloc[-1]
 
 
-	print(
+	'''print(
 		datetime.now(),
 		"signal_high:",
 		signal_high,
 		"signal_ema:",
 		round(signal_ema, 2),
-	)
+	)'''
 
 	if position is not None:
 		return
@@ -471,15 +512,13 @@ def evaluate_signal():
 			risk = entry_price - stop_price
 
 
-		trade_qty = 50
-		#trade_qty = int(MAX_LOSS_PER_TRADE / risk)
+		trade_qty = int(MAX_LOSS_PER_TRADE / risk)
 
 
 		if trade_qty <= 0:
 			return
 
-		trade_target = entry_price + 10
-		#trade_target = entry_price + (risk * 5)
+		trade_target = entry_price + (risk * 5)
 
 		with state_lock:
 
@@ -487,6 +526,7 @@ def evaluate_signal():
 			stop = stop_price
 			target = trade_target
 			qty = trade_qty
+			previous_low = entry
 
 			signal_time = datetime.now()
 			
