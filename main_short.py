@@ -4,6 +4,7 @@
 # changed the candle index from -2 to -1 for signal generation and stop loss reset.
 # this is beta version with live trading activated. Please use it with caution and at your own risk. The author is not responsible for any financial loss incurred while using this bot.
 # version 1.1
+# added 3 consecutive candle condition for break even update for live trading script
 
 import pandas as pd
 import threading
@@ -356,13 +357,15 @@ def reset_short_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_high_stop = df["high"].iloc[-1]
+		signal_high_stop_1 = df["high"].iloc[-1]
+		signal_high_stop_2 = df["high"].iloc[-2]
+		signal_high_stop_3 = df["high"].iloc[-3]
 
 		with state_lock:
 
 			if (
 				position == "SHORT_CONFIRMED"
-				and signal_high_stop < entry
+				and signal_high_stop_1 < entry and signal_high_stop_2 < entry and signal_high_stop_3 < entry
 				and stop > entry
 			):
 
