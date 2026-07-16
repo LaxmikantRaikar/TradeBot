@@ -405,13 +405,15 @@ def reset_short_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_high_stop = df["high"].iloc[-1]
+		signal_high_stop_1 = df["high"].iloc[-1]
+		signal_high_stop_2 = df["high"].iloc[-2]
+		signal_high_stop_3 = df["high"].iloc[-3]
 
 		with state_lock:
 
 			if (
 				position == "SHORT_CONFIRMED"
-				and signal_high_stop < entry
+				and signal_high_stop_1 < entry and signal_high_stop_2 < entry and signal_high_stop_3 < entry
 				and stop > entry
 			):
 
