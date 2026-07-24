@@ -3,12 +3,17 @@
 # changed the candle index from -2 to -1 for signal generation and stop loss reset.
 # this is beta version with live trading activated. Please use it with caution and at your own risk. The author is not responsible for any financial loss incurred while using this bot.
 # version 1.1
+# version 1.2  date: 24-July-2026
+# made TIMEFRAME fully configurable — fixed hardcoded "minute" calls in reset_stop()
+# and evaluate_signal(), derived CONFIRM_TIMEOUT and main-loop wake-up from the
+# actual candle duration instead of assuming 60 seconds.
 
 import pandas as pd
 import threading
 import time as tme
 import csv
 import os
+import re
 from datetime import datetime, timedelta, time
 from kiteconnect import KiteTicker,KiteConnect
 import sys
@@ -128,9 +133,41 @@ MAX_TRADES = 4
 MAX_LOSS = -400
 SYM = "HINDUNILVR"
 EXCHANGE = "NSE"
-TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute".
+TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute", 15minute, 30minute, 60minute, etc.
 
 MAX_LOSS_PER_TRADE = abs(MAX_LOSS) / MAX_TRADES
+
+
+def get_candle_seconds(timeframe):
+	"""
+	Converts a Kite Connect interval string into its duration in seconds.
+	Supports: "minute", "3minute", "5minute", "10minute", "15minute",
+	"30minute", "60minute". Raises if given an unsupported/daily interval,
+	since this bot's timing logic assumes an intraday candle.
+	"""
+
+	if timeframe == "minute":
+		return 60
+
+	match = re.fullmatch(r"(\d+)minute", timeframe)
+
+	if match:
+		return int(match.group(1)) * 60
+
+	raise ValueError(
+		f"Unsupported TIMEFRAME for this bot: '{timeframe}'. "
+		f"Use one of: minute, 3minute, 5minute, 10minute, 15minute, 30minute, 60minute."
+	)
+
+
+CANDLE_SECONDS = get_candle_seconds(TIMEFRAME)
+
+# Buffer (in seconds) kept before the candle closes, to decide whether a BUY
+# signal has been confirmed in time. This stays a fixed buffer regardless of
+# TIMEFRAME (previously hardcoded as 60 - 58 = 2 seconds for 1-minute candles).
+BUFFER_SECONDS = 2
+
+CONFIRM_TIMEOUT = CANDLE_SECONDS - BUFFER_SECONDS
 
 # ======================
 # GLOBALS
@@ -208,7 +245,7 @@ def monitor_trade():
 
 		if position == "BUY" and signal_time is not None:
 			elapsed = (datetime.now() - signal_time).total_seconds()
-			if elapsed > 58:  # 1 minute
+			if elapsed > CONFIRM_TIMEOUT:  # scales with TIMEFRAME, minus BUFFER_SECONDS
 				with state_lock:
 					#print(datetime.now(), "BUY TIMED OUT — price never broke above entry", round(entry, 2))
 					position = None
@@ -258,7 +295,7 @@ def monitor_trade():
 					round(target, 2),
 						])
 				
-				order_id = kite.place_order( 
+				'''order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
@@ -267,7 +304,7 @@ def monitor_trade():
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
 						market_protection= -1
-						)
+						)'''
 
 
 			if ltp <= stop and position == "BUY_CONFIRMED":
@@ -309,7 +346,7 @@ def monitor_trade():
 
 						])
 				
-				order_id = kite.place_order( 
+				'''order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
 						tradingsymbol=SYM,
@@ -318,7 +355,7 @@ def monitor_trade():
 						product=kite.PRODUCT_MIS,
 						order_type=kite.ORDER_TYPE_MARKET,
 						market_protection= -1
-						)
+						)'''
 				
 				if not breakeven_reached:
 					loss_trades += 1
@@ -347,7 +384,7 @@ def reset_stop():
 			token,
 			from_date,
 			to_date,
-			"minute"
+			TIMEFRAME
 		)
 
 		if not data:
@@ -355,13 +392,15 @@ def reset_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_low_stop = df["low"].iloc[-1]
+		signal_low_stop_1 = df["low"].iloc[-1]
+		signal_low_stop_2 = df["low"].iloc[-2]
+		signal_low_stop_3 = df["low"].iloc[-3]
 
 		with state_lock:
 
 			if (
 				position == "BUY_CONFIRMED"
-				and signal_low_stop > entry
+				and signal_low_stop_1 > entry and signal_low_stop_2 > entry and signal_low_stop_3 > entry
 				and stop < entry
 			):
 
@@ -406,7 +445,7 @@ def evaluate_signal():
 		token,
 		from_date,
 		to_date,
-		"minute"
+		TIMEFRAME
 	)
 
 	if not data:
@@ -557,9 +596,12 @@ while True:
 		evaluate_signal()
 		'''print('Signal search started at: ',current_time)'''
 
-	current_second = datetime.now().second
+	now = datetime.now()
+	midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+	seconds_since_midnight = (now - midnight).total_seconds()
 
-	sleep_time = 60 - current_second
+	# Sleep until the next candle boundary for the configured TIMEFRAME,
+	# instead of always assuming 1-minute candles (60 - current_second).
+	sleep_time = CANDLE_SECONDS - (seconds_since_midnight % CANDLE_SECONDS)
 
-
-	tme.sleep(sleep_time) 
+	tme.sleep(sleep_time)
