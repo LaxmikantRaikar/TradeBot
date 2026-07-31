@@ -9,6 +9,11 @@
 # made TIMEFRAME fully configurable — fixed hardcoded "minute" calls in reset_short_stop()
 # and evaluate_short_signal(), derived CONFIRM_TIMEOUT and main-loop wake-up from the
 # actual candle duration instead of assuming 60 seconds.
+# version 1.3   date: 31-July-2026
+# replaced the fixed "3 consecutive candles below entry" breakeven rule with a
+# Breakeven Track Candle (BTC) model: reset_short_stop() -> update_breakeven_track_candle()
+# tracks/confirms the BTC once per closed candle (main loop); once confirmed, monitor_trade()
+# watches live LTP and moves stop to breakeven the instant LTP breaks the confirmed BTC's low.
 
 import pandas as pd
 import threading
@@ -192,6 +197,14 @@ signal_time = None
 loss_trades = 0
 breakeven_reached = False
 
+# Breakeven Track Candle (BTC) state — tracks the candle used to decide
+# when the stop should be moved to breakeven for the current SHORT trade.
+alert_candle_high = None   # high of the alert/signal candle (set at entry)
+btc_high = None
+btc_low = None
+btc_confirmed = False
+last_btc_candle_time = None
+
 state_lock = threading.Lock()
 
 # ======================
@@ -241,6 +254,11 @@ def monitor_trade():
 	global signal_time
 	global loss_trades
 	global breakeven_reached
+	global stop
+	global btc_high
+	global btc_low
+	global btc_confirmed
+	global last_btc_candle_time
 
 
 	while True:
@@ -252,6 +270,10 @@ def monitor_trade():
 					#print(datetime.now(), "SHORT TIMED OUT — price never broke below entry", round(entry, 2))
 					position = None
 					signal_time = None
+					btc_high = None
+					btc_low = None
+					btc_confirmed = False
+					last_btc_candle_time = None
 					tme.sleep(0.1)
 					continue
 
@@ -266,6 +288,27 @@ def monitor_trade():
 
 
 		with state_lock:
+
+			# --- BTC-based breakeven trigger (tick-driven) ---
+			# Once a Breakeven Track Candle has been confirmed (condition 2),
+			# we stop tracking candles and instead watch live LTP: the moment
+			# LTP breaks below the confirmed BTC's low, move stop to breakeven.
+			if (
+				position == "SHORT_CONFIRMED"
+				and btc_confirmed
+				and not breakeven_reached
+				and btc_low is not None
+				and ltp < btc_low
+				and stop > entry
+			):
+				stop = entry
+				breakeven_reached = True
+
+				'''print(
+					datetime.now(),
+					"STOP MOVED TO BREAKEVEN (BTC low broken)",
+					round(stop, 2)
+				)'''
 
 			if position == "SHORT" and ltp < entry:
 
@@ -365,17 +408,32 @@ def monitor_trade():
 				position = None
 				signal_time = None
 				breakeven_reached = False
+				btc_high = None
+				btc_low = None
+				btc_confirmed = False
+				last_btc_candle_time = None
 
 			tme.sleep(0.1)
 
 
 #=======================
-#RESET STOP LOSS
+# BREAKEVEN TRACK CANDLE (BTC)
 #=======================
-def reset_short_stop():
-	global stop
-	global loss_trades
-	global breakeven_reached
+# Rules:
+# - After entry, the first candle whose high is below the alert candle's
+#   high becomes the Breakeven Track Candle (BTC).
+# - Every candle after that (NC = Next Candle) is compared to the current BTC:
+#     1. NC.low < BTC.low and NC.high < BTC.high  -> NC becomes the new BTC
+#     2. NC.low > BTC.low and NC.high > BTC.high  -> BTC is CONFIRMED, stop searching
+#     3. NC.low > BTC.low and NC.high < BTC.high  -> BTC unchanged (inside bar)
+#     4. NC.low < BTC.low and NC.high > BTC.high  -> NC becomes the new BTC (outside bar)
+# - Once confirmed, this function stops updating BTC. The actual breakeven
+#   move happens tick-by-tick in monitor_trade() when LTP breaks BTC.low.
+def update_breakeven_track_candle():
+	global btc_high
+	global btc_low
+	global btc_confirmed
+	global last_btc_candle_time
 
 	try:
 
@@ -394,34 +452,71 @@ def reset_short_stop():
 
 		df = pd.DataFrame(data)
 
-		signal_high_stop_1 = df["high"].iloc[-1]
-		signal_high_stop_2 = df["high"].iloc[-2]
-		signal_high_stop_3 = df["high"].iloc[-3]
+		nc = df.iloc[-1]          # most recent available candle = Next Candle
+		nc_time = nc["date"]
+		nc_high = nc["high"]
+		nc_low = nc["low"]
 
 		with state_lock:
 
-			if (
-				position == "SHORT_CONFIRMED"
-				and signal_high_stop_1 < entry and signal_high_stop_2 < entry and signal_high_stop_3 < entry
-				and stop > entry
-			):
+			if position != "SHORT_CONFIRMED":
+				return
 
-				stop = entry
-				breakeven_reached = True
+			if btc_confirmed:
+				return  # already confirmed, search has stopped for this trade
 
+			if last_btc_candle_time == nc_time:
+				return  # this candle already processed
+
+			last_btc_candle_time = nc_time
+
+			# No BTC yet: first candle after alert with high < alert high becomes BTC
+			if btc_high is None:
+
+				if alert_candle_high is not None and nc_high < alert_candle_high:
+					btc_high = nc_high
+					btc_low = nc_low
+
+					'''print(
+						datetime.now(),
+						"BTC SET",
+						round(btc_high, 2),
+						round(btc_low, 2)
+					)'''
+
+				return
+
+			# Compare NC against the current BTC
+			if nc_low < btc_low and nc_high < btc_high:
+				# condition 1: new BTC
+				btc_high = nc_high
+				btc_low = nc_low
+
+			elif nc_low > btc_low and nc_high > btc_high:
+				# condition 2: BTC confirmed, stop searching
+				btc_confirmed = True
 
 				'''print(
 					datetime.now(),
-					"STOP MOVED TO BREAKEVEN",
-					round(stop, 2)
+					"BTC CONFIRMED",
+					round(btc_high, 2),
+					round(btc_low, 2)
 				)'''
 
+			elif nc_low > btc_low and nc_high < btc_high:
+				# condition 3: inside bar, BTC unchanged
+				pass
+
+			elif nc_low < btc_low and nc_high > btc_high:
+				# condition 4: outside bar, new BTC
+				btc_high = nc_high
+				btc_low = nc_low
 
 	except Exception as e:
 
 		print(
 			datetime.now(),
-			"RESET STOP ERROR:",
+			"BTC TRACK ERROR:",
 			e
 		)
 
@@ -436,6 +531,11 @@ def evaluate_short_signal():
 	global target
 	global qty
 	global signal_time
+	global alert_candle_high
+	global btc_high
+	global btc_low
+	global btc_confirmed
+	global last_btc_candle_time
 	
 
 	to_date = datetime.now()
@@ -516,7 +616,14 @@ def evaluate_short_signal():
 			qty = trade_qty
 
 			signal_time = datetime.now()
-			
+
+			# alert candle = the signal candle just used to generate this trade
+			alert_candle_high = signal_high
+			btc_high = None
+			btc_low = None
+			btc_confirmed = False
+			last_btc_candle_time = None
+
 			position = "SHORT"
 			'''print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)'''
 
@@ -590,7 +697,7 @@ while True:
 
 
 	if position == "SHORT_CONFIRMED":
-		reset_short_stop()
+		update_breakeven_track_candle()
 
 	if position is None:
 		evaluate_short_signal()
