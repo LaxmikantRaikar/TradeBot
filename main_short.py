@@ -14,6 +14,28 @@
 # Breakeven Track Candle (BTC) model: reset_short_stop() -> update_breakeven_track_candle()
 # tracks/confirms the BTC once per closed candle (main loop); once confirmed, monitor_trade()
 # watches live LTP and moves stop to breakeven the instant LTP breaks the confirmed BTC's low.
+# version 1.4   date: 10-Aug-2026
+# FIX: main-loop candle-boundary scheduling was anchored to midnight, but Kite's
+# intraday candles are anchored to market open (09:15:00). For any TIMEFRAME that
+# doesn't evenly divide the 09:15 offset (e.g. 2minute, 5minute, 15minute...), this
+# caused the loop to wake up and fetch historical_data() up to CANDLE_SECONDS-1
+# early — i.e. while the most recent real candle was still forming, not closed.
+# Fixed by anchoring the wake-up schedule to MARKET_OPEN instead of midnight,
+# plus a small CLOSE_PUBLISH_BUFFER to avoid racing Kite's candle-publish latency
+# right at the boundary.
+# version 1.5   date: 10-Aug-2026
+# FIX (root cause of "high == low" / partial-candle reads seen in live logs):
+# kite.historical_data(from_date, to_date=now(), interval) returns the CURRENTLY
+# FORMING candle as its last row whenever `now()` falls inside that candle's
+# still-open period — it does not wait for the candle to seal, no matter how
+# long CLOSE_PUBLISH_BUFFER is. df.iloc[-1] was therefore frequently a live,
+# partially-built candle (often open==high==low==close, since only 1-2 ticks
+# had arrived), not the last CLOSED candle. This polluted both the EMA
+# calculation and the signal/BTC candle in evaluate_short_signal() and
+# update_breakeven_track_candle(). Fixed by explicitly filtering historical_data
+# to only candles whose full period has elapsed (candle_start + CANDLE_SECONDS
+# <= now) via get_closed_candles(), and using that filtered frame everywhere
+# instead of the raw response.
 
 import pandas as pd
 import threading
@@ -137,12 +159,21 @@ init_log()
 EMA_PERIOD = 5
 MAX_QTY = 100
 MAX_TRADES = 4
-MAX_LOSS = -400
+MAX_LOSS = -40
 SYM = "HINDUNILVR"
 EXCHANGE = "NSE"
-TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute", 15minute, 30minute, 60minute, etc.
+TIMEFRAME = "2minute" #for 1 minute it is "minute", for 5 minute it is "5minute", 15minute, 30minute, 60minute, etc.
 
 MAX_LOSS_PER_TRADE = abs(MAX_LOSS) / MAX_TRADES
+
+# NSE cash market opens at 09:15:00. All of Kite's intraday candle boundaries
+# for any timeframe are anchored to this time, not to midnight.
+MARKET_OPEN = time(9, 15, 0)
+
+# Small safety buffer (seconds) added AFTER a candle boundary before we fetch
+# historical_data(), to avoid racing Kite's candle-publish latency and reading
+# a still-forming candle as if it were closed.
+CLOSE_PUBLISH_BUFFER = 3
 
 
 def get_candle_seconds(timeframe):
@@ -175,6 +206,72 @@ CANDLE_SECONDS = get_candle_seconds(TIMEFRAME)
 BUFFER_SECONDS = 2
 
 CONFIRM_TIMEOUT = CANDLE_SECONDS - BUFFER_SECONDS
+
+
+def seconds_until_next_candle_close(now=None):
+	"""
+	Returns how long to sleep (in seconds) until CLOSE_PUBLISH_BUFFER seconds
+	after the next real candle boundary, where boundaries are anchored to
+	MARKET_OPEN (09:15:00) rather than midnight.
+
+	Anchoring to midnight is wrong whenever CANDLE_SECONDS doesn't evenly
+	divide the 09:15 offset-from-midnight (33300s) — which is every
+	TIMEFRAME except plain "minute". For those cases the midnight-anchored
+	schedule wakes the loop up early, while the most recent candle from
+	Kite is still forming, so evaluate_short_signal() / 
+	update_breakeven_track_candle() end up reading a partial candle as
+	df.iloc[-1].
+	"""
+
+	if now is None:
+		now = datetime.now()
+
+	market_open_dt = now.replace(
+		hour=MARKET_OPEN.hour,
+		minute=MARKET_OPEN.minute,
+		second=MARKET_OPEN.second,
+		microsecond=0
+	)
+
+	seconds_since_open = (now - market_open_dt).total_seconds()
+
+	if seconds_since_open < 0:
+		seconds_since_open = 0
+
+	remainder = seconds_since_open % CANDLE_SECONDS
+
+	if remainder == 0:
+		sleep_time = CLOSE_PUBLISH_BUFFER
+	else:
+		sleep_time = (CANDLE_SECONDS - remainder) + CLOSE_PUBLISH_BUFFER
+
+	return sleep_time
+
+
+def get_closed_candles(df):
+	"""
+	Kite's historical_data() includes the currently-forming candle as the
+	last row whenever `to_date` (now) falls inside that candle's still-open
+	period. This filters df down to only candles whose full period has
+	actually elapsed, so callers never accidentally read a live/partial
+	candle (which typically shows open==high==low==close, or a much
+	narrower range than the real closed candle will end up with).
+
+	Returns a DataFrame (possibly empty) containing only closed candles,
+	in the same order as the input.
+	"""
+
+	if df.empty:
+		return df
+
+	candle_span = timedelta(seconds=CANDLE_SECONDS)
+
+	tz = df["date"].dt.tz
+
+	now_ts = pd.Timestamp.now(tz=tz) if tz is not None else pd.Timestamp.now()
+
+	return df[df["date"] + candle_span <= now_ts]
+
 
 # ======================
 # GLOBALS
@@ -304,11 +401,11 @@ def monitor_trade():
 				stop = entry
 				breakeven_reached = True
 
-				'''print(
+				print(
 					datetime.now(),
 					"STOP MOVED TO BREAKEVEN (BTC low broken)",
 					round(stop, 2)
-				)'''
+				)
 
 			if position == "SHORT" and ltp < entry:
 
@@ -319,7 +416,7 @@ def monitor_trade():
 					datetime.now(),
 					"SHORT CONFIRMED",
 					"Entry:",
-					round(entry, 2),
+					round(ltp, 2),
 					"Stop:",
 					round(stop, 2),
 					"Target:",
@@ -328,7 +425,7 @@ def monitor_trade():
 					round(qty, 2)
 					)
 				
-
+	
 				log_trade([
 					datetime.now(),
 					"SHORT CONFIRMED",
@@ -452,7 +549,12 @@ def update_breakeven_track_candle():
 
 		df = pd.DataFrame(data)
 
-		nc = df.iloc[-1]          # most recent available candle = Next Candle
+		df = get_closed_candles(df)
+
+		if df.empty:
+			return   # most recent candle hasn't fully closed yet — nothing new to process
+
+		nc = df.iloc[-1]          # most recent CLOSED candle = Next Candle
 		nc_time = nc["date"]
 		nc_high = nc["high"]
 		nc_low = nc["low"]
@@ -496,12 +598,13 @@ def update_breakeven_track_candle():
 				# condition 2: BTC confirmed, stop searching
 				btc_confirmed = True
 
-				'''print(
+				print(
 					datetime.now(),
 					"BTC CONFIRMED",
+					"BTC_high ",
 					round(btc_high, 2),
-					round(btc_low, 2)
-				)'''
+					"BTC_low ",round(btc_low, 2)
+				)
 
 			elif nc_low > btc_low and nc_high < btc_high:
 				# condition 3: inside bar, BTC unchanged
@@ -555,6 +658,8 @@ def evaluate_short_signal():
 
 	df = pd.DataFrame(data)
 
+	df = get_closed_candles(df)   # drop the still-forming candle before any calc
+
 	if len(df) < EMA_PERIOD + 2:
 		return
 
@@ -572,13 +677,15 @@ def evaluate_short_signal():
 	signal_ema = df["EMA"].iloc[-1]
 
 
-	'''print(
+	print(
 		datetime.now(),
+		"signal_low:",
+		signal_low,
 		"signal_high:",
 		signal_high,
 		"signal_ema:",
 		round(signal_ema, 2),
-	)'''
+	)
 
 	if position is not None:
 		return
@@ -625,7 +732,7 @@ def evaluate_short_signal():
 			last_btc_candle_time = None
 
 			position = "SHORT"
-			'''print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)'''
+			print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
 
 
 # ======================
@@ -703,12 +810,9 @@ while True:
 		evaluate_short_signal()
 		'''print('Signal search started at: ',current_time)'''
 
-	now = datetime.now()
-	midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-	seconds_since_midnight = (now - midnight).total_seconds()
-
-	# Sleep until the next candle boundary for the configured TIMEFRAME,
-	# instead of always assuming 1-minute candles (60 - current_second).
-	sleep_time = CANDLE_SECONDS - (seconds_since_midnight % CANDLE_SECONDS)
+	# Sleep until CLOSE_PUBLISH_BUFFER seconds after the next real candle
+	# boundary, anchored to MARKET_OPEN (09:15:00) — not midnight — so this
+	# lines up with Kite's actual candle close times for any TIMEFRAME.
+	sleep_time = seconds_until_next_candle_close()
 
 	tme.sleep(sleep_time)

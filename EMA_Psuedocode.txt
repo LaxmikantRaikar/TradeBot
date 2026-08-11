@@ -14,28 +14,8 @@
 ===============================================
 
 
-Findidng Breakeven condition for short trading:
---------------------------------------------------------
-After entry, any candle after alert candle, whose high is below alert candle, then it becomes Breakeven Track Candle(BTC).
-
-After BTC is set, there are four conditions to check with next candle(NC):
-	1. If NC.low < BTC.low and NC.high < BTC.high then NC will be our new BTC.
-	2. If NC.low > BTC.low and NC.high > BTC.high then BTC is confirmed as existing BTC.
-	3. If NC.low > BTC.low and NC.high < BTC.high then BTC remains same.
-	4. If NC.low < BTC.low and NC.high > BTC.high then NC will be our new BTC.
-
-If any candle after confirmed BTC breaks low of Confirmed BTC then stop loss is moved to entry.
-
-
-
-
  
 Candle breaks high of BTC but does break low  > Now BTC will be final Candle and stop loss will moved to entry.
- 
-
-
-
-
 
 
 1. 	If candle high < EMA5 then set Alert candle = yes.
@@ -53,9 +33,17 @@ Candle breaks high of BTC but does break low  > Now BTC will be final Candle and
 =========================================
 
 
+Findidng Breakeven condition for short trading:
+--------------------------------------------------------
+After entry, any candle after alert candle, whose high is below alert candle, then it becomes Breakeven Track Candle(BTC).
 
+After BTC is set, there are four conditions to check with next candle(NC):
+	1. If NC.low < BTC.low and NC.high < BTC.high then NC will be our new BTC.
+	2. If NC.low > BTC.low and NC.high > BTC.high then BTC is confirmed as existing BTC.
+	3. If NC.low > BTC.low and NC.high < BTC.high then BTC remains same.
+	4. If NC.low < BTC.low and NC.high > BTC.high then NC will be our new BTC.
 
-
+If any candle after confirmed BTC breaks low of Confirmed BTC then stop loss is moved to entry.
      
 
 
