@@ -22,6 +22,9 @@
 #    trailing_target is tightened UP to the TTC's low. The trade exits the
 #    instant LTP falls back to trailing_target, ratcheting tighter (higher) as
 #    new TTCs confirm.
+#	 Removed all 5R target logic and code. The bot now only uses entry and stop loss for trade management. 
+
+
 
 import pandas as pd
 import threading
@@ -198,7 +201,7 @@ TRAIL_CANDLE_SECONDS = get_candle_seconds(TRAIL_TIMEFRAME)
 BUFFER_SECONDS = 2
 
 CONFIRM_TIMEOUT = CANDLE_SECONDS - BUFFER_SECONDS
-
+   
 
 def seconds_until_next_candle_close(now=None):
 	"""
@@ -283,7 +286,6 @@ position = None
 
 entry = None
 stop = None
-target = None
 qty = None
 
 live_pnl = 0
@@ -492,8 +494,6 @@ def monitor_trade():
 					round(entry, 2),
 					"Stop:",
 					round(stop, 2),
-					"Target:",
-					round(target, 2),
 					"Qty:",
 					round(qty, 2)
 					)
@@ -505,10 +505,7 @@ def monitor_trade():
 					"Entry:",
 					round(entry, 2),
 					"Stop",
-					round(stop, 2),
-					"Target:",
-					round(target, 2),
-						])
+					round(stop, 2),])
 				
 				'''order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
@@ -943,13 +940,10 @@ def evaluate_signal():
 		if trade_qty <= 0:
 			return
 
-		trade_target = entry_price + (risk * 5)
-
 		with state_lock:
 
 			entry = entry_price
 			stop = stop_price
-			target = trade_target
 			qty = trade_qty
 
 			signal_time = datetime.now()
@@ -969,7 +963,7 @@ def evaluate_signal():
 			trailing_target = None
 
 			position = "BUY"
-			'''print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)'''
+			print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'qty:',qty)
 
 			
 

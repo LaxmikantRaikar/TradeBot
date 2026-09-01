@@ -49,6 +49,9 @@
 # The trade now exits the instant LTP reaches trailing_target (this is a new
 # exit path -- previously the bot had no target-based exit at all, only the
 # breakeven-adjusted stop).
+# Removed all 5R target logic and code. The bot now only uses entry and stop loss for trade management.
+
+
 import pandas as pd
 import threading
 import time as tme
@@ -515,8 +518,6 @@ def monitor_trade():
 					round(ltp, 2),
 					"Stop:",
 					round(stop, 2),
-					"Target:",
-					round(target, 2),
 					"Qty:",
 					round(qty, 2)
 					)
@@ -529,9 +530,7 @@ def monitor_trade():
 					round(entry, 2),
 					"Stop",
 					round(stop, 2),
-					"Target:",
-					round(target, 2),
-						])
+					])
 				
 				'''order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
@@ -871,7 +870,6 @@ def evaluate_short_signal():
 	global position
 	global entry
 	global stop
-	global target
 	global qty
 	global signal_time
 	global alert_candle_high
@@ -960,13 +958,11 @@ def evaluate_short_signal():
 		if trade_qty <= 0:
 			return
 
-		trade_target = entry_price - (risk * 5)
 
 		with state_lock:
 
 			entry = entry_price
 			stop = stop_price
-			target = trade_target
 			qty = trade_qty
 
 			signal_time = datetime.now()
@@ -986,7 +982,7 @@ def evaluate_short_signal():
 			trailing_target = None
 
 			position = "SHORT"
-			print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'target:',target,'qty:',qty)
+			print('SHORT SIGNAL','entry: ',entry,'stop: ',stop,'qty:',qty)
 
 
 # ======================
