@@ -24,6 +24,15 @@
 #    new TTCs confirm.
 #	 Removed all 5R target logic and code. The bot now only uses entry and stop loss for trade management. 
 
+# version 1.3   date: 19-Oct-2026
+# CHANGE: trailing_target is no longer set to the TTC candle's low. Once a TTC
+# is confirmed, the candle thread keeps refreshing post_ttc_low = the LOWEST low
+# among all closed 5-min candles AFTER the TTC candle (this includes the candle
+# that confirmed the TTC). When LTP breaks above the TTC high, trailing_target
+# is set to post_ttc_low (falls back to ttc_low only if no post-TTC candle has
+# been read yet). A candidate that is not above the current stop is ignored so
+# the target can never loosen the breakeven stop.
+
 
 
 import pandas as pd
@@ -188,7 +197,7 @@ def get_candle_seconds(timeframe):
 
 
 CANDLE_SECONDS = get_candle_seconds(TIMEFRAME)
-
+   
 # Timeframe used ONLY for the post-breakeven trailing target logic. Per spec
 # this is always 5-minute candles, regardless of what TIMEFRAME the entry/BTC
 # logic above is using.
@@ -307,11 +316,11 @@ last_btc_candle_time = None
 
 # Trailing Target state — once the stop has been moved to breakeven, we
 # start tracking a Trailing Track Candle (TTC) on TRAIL_TIMEFRAME (5-minute)
-# candles, using the SAME confirmation logic as the BTC above. Each time a
-# TTC is confirmed AND LTP then breaks back above that TTC's high,
-# trailing_target is tightened UP to that TTC's low. The trade then exits
-# the instant LTP falls back to trailing_target, instead of waiting for the
-# original breakeven stop.
+# candles, using the SAME confirmation logic as the BTC above. Once a TTC is
+# confirmed AND LTP then breaks back above that TTC's high, trailing_target
+# is set to post_ttc_low (the lowest low among the closed 5-minute candles
+# after the TTC candle). The trade then exits the instant LTP falls back to
+# trailing_target, instead of waiting for the original breakeven stop.
 trailing_active = False        # True once breakeven has been reached for this trade
 breakeven_time = None          # timestamp breakeven was achieved; only candles closing after this are eligible
 ttc_high = None
@@ -319,6 +328,8 @@ ttc_low = None
 ttc_confirmed = False
 last_ttc_candle_time = None
 trailing_target = None         # tightened exit level once a TTC is confirmed; None until then
+ttc_candle_time = None         # start time of the 5-min candle currently held as the TTC
+post_ttc_low = None            # lowest low among closed 5-min candles after the TTC candle
 
 state_lock = threading.Lock()
 
@@ -381,6 +392,8 @@ def monitor_trade():
 	global ttc_confirmed
 	global last_ttc_candle_time
 	global trailing_target
+	global ttc_candle_time
+	global post_ttc_low
 
 
 	while True:
@@ -403,6 +416,8 @@ def monitor_trade():
 					ttc_confirmed = False
 					last_ttc_candle_time = None
 					trailing_target = None
+					ttc_candle_time = None
+					post_ttc_low = None
 					tme.sleep(0.1)
 					continue
 
@@ -451,14 +466,17 @@ def monitor_trade():
 				ttc_confirmed = False
 				last_ttc_candle_time = None
 				trailing_target = None
+				ttc_candle_time = None
+				post_ttc_low = None
 
 			# --- TTC-based trailing target trigger (tick-driven) ---
 			# Same two-stage pattern as the BTC/breakeven trigger above: once a
 			# TTC has been pattern-confirmed (candle-only, in
 			# update_trailing_track_candle()), we watch live LTP and only ACT
 			# the moment LTP breaks above that confirmed TTC's high. At that
-			# point trailing_target is tightened UP to the TTC's low, and the
-			# search resets so a further, tighter TTC can be found next.
+			# point trailing_target is set to post_ttc_low (the lowest low among
+			# the closed 5-min candles after the TTC candle), and the search
+			# resets so a further, tighter TTC can be found next.
 			if (
 				position == "BUY_CONFIRMED"
 				and trailing_active
@@ -466,21 +484,28 @@ def monitor_trade():
 				and ttc_high is not None
 				and ltp > ttc_high
 			):
-				candidate_target = ttc_low
+				candidate_target = post_ttc_low if post_ttc_low is not None else ttc_low
 
-				if trailing_target is None or candidate_target > trailing_target:
+				# Only accept a target that is tighter than the current exit
+				# level (above the stop, and above any earlier trailing target).
+				if candidate_target > stop and (
+					trailing_target is None or candidate_target > trailing_target
+				):
 					trailing_target = candidate_target
 
 					print(
 						datetime.now(),
 						"TRAILING TARGET SET (TTC high broken)",
-						round(trailing_target, 2)
+						round(trailing_target, 2),
+						"TTC_high:", round(ttc_high, 2)
 					)
 
 				# resume the candle search for the NEXT (tighter) TTC
 				ttc_high = None
 				ttc_low = None
 				ttc_confirmed = False
+				ttc_candle_time = None
+				post_ttc_low = None
 
 			if position == "BUY" and ltp > entry:
 
@@ -569,7 +594,7 @@ def monitor_trade():
 				'''order_id = kite.place_order( 
 						variety=kite.VARIETY_REGULAR,
 						exchange=kite.EXCHANGE_NSE,
-						tradingsymbol=SYM,
+						tradingsymbol=SYM, 
 						transaction_type=kite.TRANSACTION_TYPE_SELL,
 						quantity=qty,
 						product=kite.PRODUCT_MIS,
@@ -594,6 +619,8 @@ def monitor_trade():
 				ttc_confirmed = False
 				last_ttc_candle_time = None
 				trailing_target = None
+				ttc_candle_time = None
+				post_ttc_low = None
 
 			tme.sleep(0.1)
 
@@ -721,10 +748,12 @@ def update_breakeven_track_candle():
 # - Every next candle (NC) is compared to the current TTC:
 #     1. NC.high > TTC.high and NC.low > TTC.low  -> NC becomes the new TTC
 #     2. NC.high < TTC.high and NC.low < TTC.low  -> TTC pattern CONFIRMED:
-#          ttc_high/ttc_low freeze and candle search pauses. The actual
-#          trailing_target is only set tick-by-tick in monitor_trade() once
-#          LTP breaks back ABOVE this TTC's high (mirrors the BTC's
-#          two-stage confirm -> LTP-break design).
+#          ttc_high/ttc_low freeze and the TTC search pauses. While paused,
+#          post_ttc_low is refreshed on every candle close with the LOWEST low
+#          among the closed 5-min candles after the TTC candle (the confirming
+#          candle is the first of these). The actual trailing_target is only
+#          set tick-by-tick in monitor_trade() once LTP breaks back ABOVE this
+#          TTC's high, and it is set to post_ttc_low.
 #     3. NC.high < TTC.high and NC.low > TTC.low  -> TTC unchanged (inside bar)
 #     4. NC.high > TTC.high and NC.low < TTC.low  -> NC becomes the new TTC (outside bar)
 #
@@ -737,6 +766,8 @@ def update_trailing_track_candle():
 	global ttc_confirmed
 	global last_ttc_candle_time
 	global trailing_target
+	global ttc_candle_time
+	global post_ttc_low
 
 	try:
 
@@ -756,7 +787,7 @@ def update_trailing_track_candle():
 		df = pd.DataFrame(data)
 
 		df = get_closed_candles(df, TRAIL_CANDLE_SECONDS)
-
+   
 		if df.empty:
 			return   # most recent 5-min candle hasn't fully closed yet
 
@@ -769,7 +800,16 @@ def update_trailing_track_candle():
 				return
 
 			if ttc_confirmed:
-				return  # waiting for LTP to break TTC high (handled in monitor_trade); pause candle search
+				# TTC search stays paused (LTP break is handled in monitor_trade),
+				# but keep refreshing the reference low: the lowest low among the
+				# closed 5-min candles AFTER the TTC candle.
+				if ttc_candle_time is not None:
+					after = df[df["date"] > ttc_candle_time]
+
+					if not after.empty:
+						post_ttc_low = after["low"].min()
+
+				return
 
 			# Only candles that closed AFTER breakeven was reached are eligible.
 			tz = df["date"].dt.tz
@@ -801,6 +841,7 @@ def update_trailing_track_candle():
 			if ttc_high is None:
 				ttc_high = nc_high
 				ttc_low = nc_low
+				ttc_candle_time = nc_time
 				ttc_confirmed = False
 				return
 
@@ -809,22 +850,29 @@ def update_trailing_track_candle():
 				# condition 1: new TTC
 				ttc_high = nc_high
 				ttc_low = nc_low
+				ttc_candle_time = nc_time
 				print("TTC_HIGH :",round(ttc_high, 2),"TTC_LOW :",round(ttc_low, 2))
 
 			elif nc_high < ttc_high and nc_low < ttc_low:
 				# condition 2: TTC pattern confirmed. Mirrors the BTC behaviour --
-				# ttc_high/ttc_low stay FROZEN here and candle search pauses
+				# ttc_high/ttc_low stay FROZEN here and the candle search pauses
 				# (see the ttc_confirmed guard above). The actual trailing_target
 				# is only set tick-by-tick in monitor_trade() once LTP breaks
 				# above this TTC's high.
 				ttc_confirmed = True
+
+				# lowest low among the closed candles after the TTC candle
+				# (inside bars, if any, plus this confirming candle)
+				after = df[df["date"] > ttc_candle_time]
+				post_ttc_low = after["low"].min() if not after.empty else nc_low
 
 				print(
 					datetime.now(),
 					"TTC CONFIRMED",
 					"TTC_high ",
 					round(ttc_high, 2),
-					"TTC_low ", round(ttc_low, 2)
+					"TTC_low ", round(ttc_low, 2),
+					"POST_TTC_low ", round(post_ttc_low, 2)
 				)
 
 			elif nc_high < ttc_high and nc_low > ttc_low:
@@ -836,6 +884,7 @@ def update_trailing_track_candle():
 				# condition 4: outside bar, new TTC
 				ttc_high = nc_high
 				ttc_low = nc_low
+				ttc_candle_time = nc_time
 				print(datetime.now(),"# condition 4: outside bar, new TTC","TTC_HIGH: ",round(ttc_high, 2),"TTC_LOW: ",round(ttc_low, 2))
 
 	except Exception as e:
@@ -869,6 +918,8 @@ def evaluate_signal():
 	global ttc_confirmed
 	global last_ttc_candle_time
 	global trailing_target
+	global ttc_candle_time
+	global post_ttc_low
 	
 
 	to_date = datetime.now()
@@ -961,6 +1012,8 @@ def evaluate_signal():
 			ttc_confirmed = False
 			last_ttc_candle_time = None
 			trailing_target = None
+			ttc_candle_time = None
+			post_ttc_low = None
 
 			position = "BUY"
 			print('BUY SIGNAL','entry: ',entry,'stop: ',stop,'qty:',qty)

@@ -11,7 +11,7 @@ def load_credentials(path):
     with open(path, "r") as f:
         for line in f:
             line = line.strip()
-            if "=" in line:
+            if "=" in line: 
                 key, value = line.split("=", 1)
                 creds[key.strip()] = value.strip()
     return creds
