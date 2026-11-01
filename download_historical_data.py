@@ -29,7 +29,7 @@ import sys
 
 #========================================
 #Logger
-FILE = "HistoricalData_2min_today.csv"
+FILE = "HistoricalData_minute.csv"
 
 
 def load_creds():
@@ -75,14 +75,14 @@ def get_token(kite):
 
 to_date = datetime.now()
 #to_date = datetime(2026, 6, 7, 15, 0)  # For testing purposes
-from_date = to_date - timedelta(days=1)
+from_date = to_date - timedelta(days=30)
 #from_date = datetime(2026, 6, 6, 9, 15)  # For testing purposes
 
 
 
 SYM = "HINDUNILVR"
 EXCHANGE = "NSE"
-TIMEFRAME = "2minute" #for 1 minute it is "minute", for 5 minute it is "5minute", 15minute, 30minute, 60minute, etc.
+TIMEFRAME = "minute" #for 1 minute it is "minute", for 5 minute it is "5minute", 15minute, 30minute, 60minute, etc.
 
 
 kite = get_kite()

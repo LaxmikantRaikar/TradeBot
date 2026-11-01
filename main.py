@@ -49,7 +49,7 @@ import sys
 
 #========================================
 #Logger
-FILE = "trades.csv"
+FILE = "trades_long.csv"
 
 
 def init_log():
@@ -208,6 +208,7 @@ TRAIL_CANDLE_SECONDS = get_candle_seconds(TRAIL_TIMEFRAME)
 # signal has been confirmed in time. This stays a fixed buffer regardless of
 # TIMEFRAME (previously hardcoded as 60 - 58 = 2 seconds for 1-minute candles).
 BUFFER_SECONDS = 2
+
 
 CONFIRM_TIMEOUT = CANDLE_SECONDS - BUFFER_SECONDS
    
